@@ -5,8 +5,30 @@ import CustomerProfile from '../components/customers/CustomerProfile'
 import Loader from '../components/Loader'
 import collectionService from '../services/collectionService'
 import customerService from '../services/customerService'
+import paymentService from '../services/paymentService'
 import loanService from '../services/loanService'
 import useAuth from '../hooks/useAuth'
+
+const emptyProfileData = {
+  collections: [],
+  loans: [],
+  emiPayments: [],
+}
+
+const emptySectionStatus = {
+  collections: { loading: false, error: '' },
+  loans: { loading: false, error: '' },
+  emiPayments: { loading: false, error: '' },
+}
+
+const sectionMessages = {
+  collections: 'Collection history is unavailable right now. Check Firestore indexes or collection permissions.',
+  loans: 'Loan history is unavailable right now. Check Firestore indexes or loan permissions.',
+  emiPayments: 'EMI payment history is unavailable right now. Check Firestore indexes or EMI permissions.',
+}
+
+const customerLookupIds = (customer, routeCustomerId) =>
+  [...new Set([customer?.id, customer?.customerId, routeCustomerId].filter(Boolean).map(String))]
 
 function CustomerDetailsPage() {
   const { customerId } = useParams()
@@ -14,8 +36,8 @@ function CustomerDetailsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [customer, setCustomer] = useState(null)
-  const [collections, setCollections] = useState([])
-  const [loans, setLoans] = useState([])
+  const [profileData, setProfileData] = useState(emptyProfileData)
+  const [sectionStatus, setSectionStatus] = useState(emptySectionStatus)
 
   useEffect(() => {
     let isMounted = true
@@ -23,33 +45,56 @@ function CustomerDetailsPage() {
     const fetchDetails = async () => {
       setLoading(true)
       setError('')
+      setCustomer(null)
+      setProfileData(emptyProfileData)
+      setSectionStatus(emptySectionStatus)
       try {
         const customerData = await customerService.getById(customerId)
         if (!isMounted) return
 
         setCustomer(customerData)
-        const resolvedCustomerId = customerData.id || customerData.customerId || customerId
-        try {
-          const [collectionData, loanData] = await Promise.all([
-            collectionService.getAll({ customer_id: resolvedCustomerId, currentUser: user, pageSize: 25 }),
-            user?.role === 'admin'
-              ? loanService.getAll({ customer_id: resolvedCustomerId, pageSize: 25 })
-              : Promise.resolve([]),
-          ])
-          if (!isMounted) return
-          setCollections(Array.isArray(collectionData) ? collectionData : collectionData.results || [])
-          setLoans(Array.isArray(loanData) ? loanData : loanData.results || [])
-        } catch {
-          if (!isMounted) return
-          setCollections([])
-          setLoans([])
-          setError('Customer loaded, but recent history could not be loaded.')
-        }
+        setLoading(false)
+
+        const customerIds = customerLookupIds(customerData, customerId)
+        setSectionStatus({
+          collections: { loading: true, error: '' },
+          loans: { loading: true, error: '' },
+          emiPayments: { loading: true, error: '' },
+        })
+
+        const [collectionResult, loanResult, emiPaymentResult] = await Promise.allSettled([
+          collectionService.getByCustomerIds({ customerIds, currentUser: user, pageSize: 25 }),
+          loanService.getByCustomerIds({ customerIds, pageSize: 25 }),
+          paymentService.getCustomerEmiPayments({ customerIds, currentUser: user, pageSize: 25 }),
+        ])
+        if (!isMounted) return
+
+        setProfileData({
+          collections:
+            collectionResult.status === 'fulfilled' ? collectionResult.value.results || [] : [],
+          loans: loanResult.status === 'fulfilled' ? loanResult.value.results || [] : [],
+          emiPayments:
+            emiPaymentResult.status === 'fulfilled' ? emiPaymentResult.value.results || [] : [],
+        })
+        setSectionStatus({
+          collections: {
+            loading: false,
+            error: collectionResult.status === 'rejected' ? sectionMessages.collections : '',
+          },
+          loans: {
+            loading: false,
+            error: loanResult.status === 'rejected' ? sectionMessages.loans : '',
+          },
+          emiPayments: {
+            loading: false,
+            error: emiPaymentResult.status === 'rejected' ? sectionMessages.emiPayments : '',
+          },
+        })
       } catch (exception) {
         if (!isMounted) return
         setCustomer(null)
-        setCollections([])
-        setLoans([])
+        setProfileData(emptyProfileData)
+        setSectionStatus(emptySectionStatus)
         setError(exception.message || 'Unable to load customer details.')
       } finally {
         if (isMounted) setLoading(false)
@@ -95,7 +140,13 @@ function CustomerDetailsPage() {
       </section>
 
       {error && <div className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
-      <CustomerProfile customer={customer} collections={collections} loans={loans} />
+      <CustomerProfile
+        customer={customer}
+        collections={profileData.collections}
+        loans={profileData.loans}
+        emiPayments={profileData.emiPayments}
+        sectionStatus={sectionStatus}
+      />
     </div>
   )
 }

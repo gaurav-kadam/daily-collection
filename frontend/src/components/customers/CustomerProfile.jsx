@@ -1,4 +1,4 @@
-import { FiCreditCard, FiMapPin, FiPhone, FiUser } from 'react-icons/fi'
+import { FiCreditCard, FiImage, FiMapPin, FiPhone, FiUser } from 'react-icons/fi'
 import TableComponent from '../TableComponent'
 import { formatDate } from '../../utils/date'
 import { formatCurrency, formatPhone } from '../../utils/format'
@@ -20,6 +20,7 @@ function SummaryTile({ label, value, tone = 'slate' }) {
     amber: 'bg-amber-50 text-amber-800',
     sky: 'bg-sky-50 text-sky-800',
   }
+
   return (
     <div className={`rounded-lg p-4 ${tones[tone]}`}>
       <p className="text-xs font-semibold uppercase opacity-70">{label}</p>
@@ -32,23 +33,110 @@ function SectionHeader({ children }) {
   return <h3 className="section-title mb-4">{children}</h3>
 }
 
-function CustomerProfile({ customer, collections = [], loans = [] }) {
+function SectionTable({ columns, rows, status, emptyMessage }) {
+  if (status?.loading) {
+    return (
+      <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+        Loading records...
+      </div>
+    )
+  }
+
+  if (status?.error) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        {status.error}
+      </div>
+    )
+  }
+
+  return <TableComponent columns={columns} rows={rows} emptyMessage={emptyMessage} />
+}
+
+const numeric = (value) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const sortByDateDesc = (records, dateField) =>
+  [...records].sort((first, second) =>
+    String(second[dateField] || '').localeCompare(String(first[dateField] || '')),
+  )
+
+function CustomerProfile({
+  customer,
+  collections = [],
+  loans = [],
+  emiPayments = [],
+  sectionStatus = {},
+}) {
   const photoUrl = customer.photoUrl || customer.photo
   const activeLoans = loans.filter((loan) => (loan.loanStatus || loan.status) === 'active')
+  const completedLoans = loans.filter((loan) => (loan.loanStatus || loan.status) === 'completed')
   const outstandingLoanAmount = loans.reduce(
-    (total, loan) => total + Number(loan.remainingBalance || loan.remaining_balance || 0),
+    (total, loan) => total + numeric(loan.remainingBalance || loan.remaining_balance),
     0,
   )
+  const totalEmiPaidFromPayments = emiPayments.reduce(
+    (total, payment) => total + numeric(payment.amountPaid || payment.amount || payment.paidAmount),
+    0,
+  )
+  const totalEmiPaidFromLoans = loans.reduce(
+    (total, loan) => total + numeric(loan.totalPaid || loan.total_paid),
+    0,
+  )
+  const totalEmiPaid = totalEmiPaidFromPayments || totalEmiPaidFromLoans
+  const overdueEmiCount = loans.filter((loan) => numeric(loan.overdueDays) > 0).length
+
+  const recentPayments = sortByDateDesc(
+    [
+      ...collections.map((collection) => ({
+        id: `collection-${collection.collectionId || collection.id}`,
+        date: collection.date || collection.collection_date,
+        amount:
+          collection.amount ??
+          numeric(collection.amountCollected) + numeric(collection.pendingRecovered),
+        status: collection.status,
+        paymentType: 'Daily Collection',
+        collector: collection.collectorName,
+      })),
+      ...emiPayments.map((payment) => ({
+        id: `emi-${payment.paymentId || payment.id}`,
+        date: payment.paymentDate,
+        amount: payment.amountPaid || payment.amount,
+        status: payment.status || 'paid',
+        paymentType: 'EMI',
+        collector: payment.collectorName || payment.collectedByName,
+      })),
+    ],
+    'date',
+  ).slice(0, 10)
 
   const collectionColumns = [
     { header: 'Date', accessor: 'date', render: (row) => formatDate(row.date || row.collection_date) },
     {
-      header: 'Amount',
+      header: 'Amount Collected',
       accessor: 'amount',
       render: (row) =>
-        formatCurrency(row.amount ?? Number(row.amountCollected || 0) + Number(row.pendingRecovered || 0)),
+        formatCurrency(row.amount ?? numeric(row.amountCollected) + numeric(row.pendingRecovered)),
     },
+    { header: 'Payment Method', accessor: 'paymentMethod', render: (row) => row.paymentMethod || '-' },
     { header: 'Status', accessor: 'status' },
+    { header: 'Collector', accessor: 'collectorName', render: (row) => row.collectorName || '-' },
+    {
+      header: 'Pending Amount',
+      accessor: 'pendingCreated',
+      render: (row) => formatCurrency(row.pendingCreated || row.pendingAmount || 0),
+    },
+    { header: 'Remarks', accessor: 'remarks', render: (row) => row.remarks || '-' },
+  ]
+
+  const recentPaymentColumns = [
+    { header: 'Date', accessor: 'date', render: (row) => formatDate(row.date) },
+    { header: 'Amount', accessor: 'amount', render: (row) => formatCurrency(row.amount) },
+    { header: 'Status', accessor: 'status' },
+    { header: 'Payment Type', accessor: 'paymentType' },
+    { header: 'Collector', accessor: 'collector', render: (row) => row.collector || '-' },
   ]
 
   const loanColumns = [
@@ -57,19 +145,41 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
       accessor: 'loanAmount',
       render: (row) => formatCurrency(row.loanAmount || row.loan_amount),
     },
-    { header: 'EMI', accessor: 'monthlyEMI', render: (row) => formatCurrency(row.monthlyEMI || row.emi_amount) },
     {
-      header: 'Installments',
-      accessor: 'paidInstallments',
-      render: (row) => `${row.paidInstallments || row.paid_installments || 0}/${row.loanDurationMonths || row.total_installments || 0}`,
+      header: 'Processing Fee',
+      accessor: 'processingFee',
+      render: (row) => formatCurrency(row.processingFee || row.processing_fee),
     },
     {
-      header: 'Outstanding',
+      header: 'Remaining Balance',
       accessor: 'remainingBalance',
       render: (row) => formatCurrency(row.remainingBalance || row.remaining_balance),
     },
-    { header: 'Status', accessor: 'loanStatus', render: (row) => row.loanStatus || row.status },
+    { header: 'EMI', accessor: 'monthlyEMI', render: (row) => formatCurrency(row.monthlyEMI || row.emi_amount) },
+    { header: 'Loan Status', accessor: 'loanStatus', render: (row) => row.loanStatus || row.status || '-' },
+    { header: 'Loan Date', accessor: 'loanDate', render: (row) => formatDate(row.loanDate) },
+    { header: 'Due Date', accessor: 'dueDate', render: (row) => formatDate(row.dueDate) },
   ]
+
+  const emiColumns = [
+    { header: 'Payment Date', accessor: 'paymentDate', render: (row) => formatDate(row.paymentDate) },
+    { header: 'Amount Paid', accessor: 'amountPaid', render: (row) => formatCurrency(row.amountPaid || row.amount) },
+    {
+      header: 'Remaining Balance',
+      accessor: 'remainingBalance',
+      render: (row) => formatCurrency(row.remainingBalance || row.remaining_balance),
+    },
+    { header: 'Payment Method', accessor: 'paymentMethod', render: (row) => row.paymentMethod || '-' },
+    { header: 'Loan Reference', accessor: 'loanId', render: (row) => row.loanId || '-' },
+  ]
+
+  const recentPaymentStatus =
+    sectionStatus.collections?.loading || sectionStatus.emiPayments?.loading
+      ? { loading: true, error: '' }
+      : {
+          loading: false,
+          error: sectionStatus.collections?.error || sectionStatus.emiPayments?.error || '',
+        }
 
   return (
     <div className="space-y-6">
@@ -108,6 +218,11 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
                   <FiMapPin /> {customer.address}
                 </p>
               </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <SummaryTile label="Daily Amount" value={formatCurrency(customer.dailyAmount)} />
+                <SummaryTile label="Savings" value={formatCurrency(customer.totalSavings)} tone="emerald" />
+                <SummaryTile label="Pending" value={formatCurrency(customer.pendingAmount)} tone="amber" />
+              </div>
             </div>
           </div>
         </div>
@@ -142,10 +257,20 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
 
       <section className="card p-5">
         <SectionHeader>Document Details</SectionHeader>
-        <dl className="grid gap-4 md:grid-cols-2">
-          <DetailItem label="ID Proof Type" value={customer.idProofType} />
-          <DetailItem label="ID Proof Number" value={customer.idProofNumber} />
-        </dl>
+        <div className="grid gap-5 lg:grid-cols-[180px_1fr]">
+          <div className="flex h-36 w-36 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+            {photoUrl ? (
+              <img src={photoUrl} alt={customer.shopName} className="h-full w-full object-cover" loading="lazy" />
+            ) : (
+              <FiImage className="text-3xl text-slate-400" />
+            )}
+          </div>
+          <dl className="grid gap-4 md:grid-cols-2">
+            <DetailItem label="ID Proof Type" value={customer.idProofType} />
+            <DetailItem label="ID Proof Number" value={customer.idProofNumber} />
+            <DetailItem label="Uploaded Photo" value={photoUrl ? 'Available' : 'Not uploaded'} />
+          </dl>
+        </div>
       </section>
 
       <section className="card p-5">
@@ -155,24 +280,74 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
 
       <section className="card p-4 md:p-5">
         <SectionHeader>Collection History</SectionHeader>
-        <TableComponent
+        <SectionTable
           columns={collectionColumns}
           rows={collections}
+          status={sectionStatus.collections}
           emptyMessage="No collections recorded for this customer yet."
         />
       </section>
 
       <section className="card p-4 md:p-5">
-        <div className="mb-4 flex flex-col justify-between gap-3 md:flex-row md:items-center">
+        <SectionHeader>Recent Payment History</SectionHeader>
+        <SectionTable
+          columns={recentPaymentColumns}
+          rows={recentPayments}
+          status={recentPaymentStatus}
+          emptyMessage="No recent payments recorded for this customer."
+        />
+      </section>
+
+      <section className="card p-4 md:p-5">
+        <div className="mb-4 flex items-center gap-2">
+          <FiCreditCard className="text-slate-500" />
           <h3 className="section-title">Loan Summary</h3>
-          <div className="inline-flex items-center gap-2 text-sm text-slate-600">
-            <FiCreditCard />
-            {activeLoans.length
-              ? `${activeLoans.length} active loan${activeLoans.length > 1 ? 's' : ''}, ${formatCurrency(outstandingLoanAmount)} outstanding`
-              : 'No active loan for this customer.'}
-          </div>
         </div>
-        <TableComponent columns={loanColumns} rows={loans} emptyMessage="No loans recorded for this customer." />
+        {sectionStatus.loans?.loading ? (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+            Loading loan summary...
+          </div>
+        ) : sectionStatus.loans?.error ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {sectionStatus.loans.error}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+              <SummaryTile label="Total Loans" value={loans.length} />
+              <SummaryTile label="Active Loans" value={activeLoans.length} tone="sky" />
+              <SummaryTile label="Completed Loans" value={completedLoans.length} tone="emerald" />
+              <SummaryTile label="Outstanding" value={formatCurrency(outstandingLoanAmount)} tone="amber" />
+              <SummaryTile label="EMI Paid" value={formatCurrency(totalEmiPaid)} tone="emerald" />
+              <SummaryTile label="Overdue EMI" value={overdueEmiCount} tone="amber" />
+            </div>
+            {sectionStatus.emiPayments?.error && (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                EMI payment records could not be loaded, so EMI paid is calculated from loan totals.
+              </p>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="card p-4 md:p-5">
+        <SectionHeader>Loan History</SectionHeader>
+        <SectionTable
+          columns={loanColumns}
+          rows={loans}
+          status={sectionStatus.loans}
+          emptyMessage="No loans recorded for this customer."
+        />
+      </section>
+
+      <section className="card p-4 md:p-5">
+        <SectionHeader>EMI History</SectionHeader>
+        <SectionTable
+          columns={emiColumns}
+          rows={emiPayments}
+          status={sectionStatus.emiPayments}
+          emptyMessage="No EMI payments recorded for this customer."
+        />
       </section>
     </div>
   )

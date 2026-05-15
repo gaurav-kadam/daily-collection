@@ -33,6 +33,22 @@ import {
 const loansRef = collection(db, COLLECTIONS.loans)
 const paymentsRef = collection(db, COLLECTIONS.emiPayments)
 
+const uniqueIds = (ids = []) => [...new Set(ids.filter(Boolean).map(String))]
+
+const timestampValue = (value) => {
+  if (!value) return 0
+  if (value?.toMillis) return value.toMillis()
+  const parsed = new Date(value).getTime()
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+const sortLoansDesc = (records) =>
+  [...records].sort(
+    (first, second) =>
+      timestampValue(second.createdAt) - timestampValue(first.createdAt) ||
+      String(second.loanDate || '').localeCompare(String(first.loanDate || '')),
+  )
+
 export const processingFeeForAmount = (amount) => {
   const loanAmount = numberValue(amount)
   return loanAmount >= 5000 && loanAmount <= 50000 ? 5000 : 0
@@ -231,6 +247,57 @@ export const getAll = async ({
   }
 }
 
+const getLoansForCustomerId = async ({ customerId, pageSize }) => {
+  const constraints = [where('customerId', '==', customerId)]
+
+  try {
+    const snapshot = await getDocs(
+      query(
+        loansRef,
+        ...constraints,
+        orderBy('createdAt', 'desc'),
+        limit(pageLimit(pageSize, 25, 100)),
+      ),
+    )
+    return docsWithIds(snapshot).map((loan) => ({ ...loan, ...calculateLoanMetrics(loan) }))
+  } catch {
+    const snapshot = await getDocs(
+      query(loansRef, ...constraints, limit(pageLimit(pageSize, 25, 100))),
+    )
+    return sortLoansDesc(docsWithIds(snapshot)).map((loan) => ({
+      ...loan,
+      ...calculateLoanMetrics(loan),
+    }))
+  }
+}
+
+export const getByCustomerIds = async ({
+  customerIds = [],
+  pageSize = 25,
+} = {}) => {
+  const ids = uniqueIds(customerIds)
+  if (!ids.length) return { results: [], count: 0 }
+
+  const batches = await Promise.allSettled(
+    ids.map((customerId) => getLoansForCustomerId({ customerId, pageSize })),
+  )
+  const rejected = batches.find((batch) => batch.status === 'rejected')
+  const merged = new Map()
+  batches
+    .filter((batch) => batch.status === 'fulfilled')
+    .flatMap((batch) => batch.value)
+    .forEach((loan) => {
+      merged.set(loan.loanId || loan.id, loan)
+    })
+  const results = sortLoansDesc([...merged.values()]).slice(0, pageLimit(pageSize, 25, 100))
+  if (!results.length && rejected) throw rejected.reason
+
+  return {
+    results,
+    count: results.length,
+  }
+}
+
 export const getById = async (loanId) => {
   const loanSnapshot = await getDoc(doc(db, COLLECTIONS.loans, loanId))
   if (!loanSnapshot.exists()) throw new Error('Loan not found.')
@@ -346,6 +413,7 @@ export default {
   listenLoans,
   createLoan,
   getAll,
+  getByCustomerIds,
   getById,
   getPendingEmi,
   updateLoanPenalty,

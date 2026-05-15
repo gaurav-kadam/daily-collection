@@ -43,7 +43,7 @@ function AddCustomerPage() {
       const created = await customerService.create(payload, user, {
         onUploadProgress: setUploadProgress,
       })
-      navigate(`/customers/${created.customerId || created.id}`)
+      navigate(`/customers/${created.id || created.customerId}`)
     } catch (exception) {
       setError(exception.message || 'Unable to save customer. Check required fields.')
     } finally {
