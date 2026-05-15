@@ -37,9 +37,9 @@ const getCachedValue = (cacheEntry) =>
   cacheEntry && Date.now() - cacheEntry.createdAt < CACHE_TTL_MS ? cacheEntry.value : null
 
 const cacheCustomer = (customer) => {
-  const customerId = customer.customerId || customer.id
-  if (!customerId) return
-  customerCache.set(customerId, { value: customer, createdAt: Date.now() })
+  const cacheEntry = { value: customer, createdAt: Date.now() }
+  if (customer.id) customerCache.set(customer.id, cacheEntry)
+  if (customer.customerId) customerCache.set(customer.customerId, cacheEntry)
 }
 
 const makeListCacheKey = (params) => JSON.stringify(params || {})
@@ -211,8 +211,19 @@ export const getById = async (customerId) => {
   if (cached) return cached
 
   const snapshot = await getDoc(doc(db, COLLECTIONS.customers, customerId))
-  if (!snapshot.exists()) throw new Error('Customer not found.')
-  const customer = { id: snapshot.id, ...snapshot.data() }
+  if (snapshot.exists()) {
+    const customer = { id: snapshot.id, ...snapshot.data() }
+    cacheCustomer(customer)
+    return customer
+  }
+
+  const fieldSnapshot = await getDocs(
+    query(customersRef, where('customerId', '==', customerId), limit(1)),
+  )
+  if (fieldSnapshot.empty) throw new Error('Customer not found.')
+
+  const match = fieldSnapshot.docs[0]
+  const customer = { id: match.id, ...match.data() }
   cacheCustomer(customer)
   return customer
 }

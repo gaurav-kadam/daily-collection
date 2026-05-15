@@ -14,7 +14,7 @@ import {
 import { USER_ROLES } from '../services/firestoreService'
 import { formatCurrency, formatPhone } from '../utils/format'
 
-const customerKey = (customer) => customer.customerId || customer.id
+const customerRouteId = (customer) => customer.id || customer.customerId
 
 function CustomersPage() {
   const navigate = useNavigate()
@@ -98,7 +98,7 @@ function CustomersPage() {
     const merged = new Map()
     const matches = [...searchResults, ...localMatches]
     matches.forEach((customer) => {
-      merged.set(customerKey(customer), customer)
+      merged.set(customerRouteId(customer), customer)
     })
     return [...merged.values()].sort((first, second) =>
       String(first.shopName || '').localeCompare(String(second.shopName || '')),
@@ -113,7 +113,7 @@ function CustomersPage() {
   )
 
   const openCustomer = (customer) => {
-    navigate(`/customers/${customerKey(customer)}`)
+    navigate(`/customers/${customerRouteId(customer)}`)
   }
 
   if (loading) {
@@ -153,55 +153,8 @@ function CustomersPage() {
       )}
 
       <section className="card overflow-hidden">
-        <div className="grid gap-3 p-3 md:hidden">
-          {paginatedCustomers.length === 0 && (
-            <div className="rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
-              No customers found
-            </div>
-          )}
-          {paginatedCustomers.map((customer) => (
-            <button
-              key={customerKey(customer)}
-              type="button"
-              className="rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm"
-              onClick={() => openCustomer(customer)}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase text-slate-500">
-                    {customer.customerId || customer.id}
-                  </p>
-                  <h3 className="mt-1 font-display text-lg font-semibold text-slate-900">
-                    {customer.shopName}
-                  </h3>
-                  <p className="text-sm text-slate-600">{customer.ownerName}</p>
-                </div>
-                <StatusBadge status={customer.status} />
-              </div>
-              <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <dt className="text-xs text-slate-500">Mobile</dt>
-                  <dd className="font-medium text-slate-800">{formatPhone(customer.mobile)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-slate-500">Daily</dt>
-                  <dd className="font-medium text-slate-800">{formatCurrency(customer.dailyAmount)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-slate-500">Savings</dt>
-                  <dd className="font-medium text-emerald-700">{formatCurrency(customer.totalSavings)}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-slate-500">Pending</dt>
-                  <dd className="font-medium text-rose-700">{formatCurrency(customer.pendingAmount)}</dd>
-                </div>
-              </dl>
-            </button>
-          ))}
-        </div>
-
-        <div className="hidden overflow-x-auto md:block">
-          <table className="min-w-full divide-y divide-slate-200 text-sm">
+        <div className="overflow-x-auto">
+          <table className="min-w-[980px] divide-y divide-slate-200 text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-4 py-3">Shop</th>
@@ -218,7 +171,7 @@ function CustomersPage() {
             <tbody className="divide-y divide-slate-100 bg-white">
               {paginatedCustomers.map((customer) => (
                 <tr
-                  key={customerKey(customer)}
+                  key={customerRouteId(customer)}
                   className="cursor-pointer transition hover:bg-slate-50"
                   onClick={() => openCustomer(customer)}
                 >
@@ -248,7 +201,7 @@ function CustomersPage() {
                       }}
                     >
                       <FiEye />
-                      View
+                      View Profile
                     </button>
                   </td>
                 </tr>

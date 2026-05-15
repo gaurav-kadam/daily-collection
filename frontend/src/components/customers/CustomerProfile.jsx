@@ -28,6 +28,10 @@ function SummaryTile({ label, value, tone = 'slate' }) {
   )
 }
 
+function SectionHeader({ children }) {
+  return <h3 className="section-title mb-4">{children}</h3>
+}
+
 function CustomerProfile({ customer, collections = [], loans = [] }) {
   const photoUrl = customer.photoUrl || customer.photo
   const activeLoans = loans.filter((loan) => (loan.loanStatus || loan.status) === 'active')
@@ -108,40 +112,49 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
           </div>
         </div>
         <div className="card p-5">
-          <h3 className="section-title mb-4">Assigned Collector</h3>
+          <SectionHeader>Assigned Collector</SectionHeader>
           <p className="text-lg font-semibold text-slate-900">{customer.assignedCollectorName || 'Unassigned'}</p>
           <p className="mt-2 text-sm text-slate-500">Area: {customer.area || '-'}</p>
           <p className="mt-2 text-sm text-slate-500">Joined: {formatDate(customer.joiningDate)}</p>
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-4">
-        <SummaryTile label="Total Savings" value={formatCurrency(customer.totalSavings)} tone="emerald" />
-        <SummaryTile label="Pending Amount" value={formatCurrency(customer.pendingAmount)} tone="amber" />
-        <SummaryTile label="Pending Days" value={customer.pendingDays || 0} />
-        <SummaryTile label="Active Loans" value={activeLoans.length} tone="sky" />
+      <section className="space-y-4">
+        <SectionHeader>Finance Details</SectionHeader>
+        <div className="grid gap-4 md:grid-cols-4">
+          <SummaryTile label="Daily Amount" value={formatCurrency(customer.dailyAmount)} />
+          <SummaryTile label="Total Savings" value={formatCurrency(customer.totalSavings)} tone="emerald" />
+          <SummaryTile label="Pending Amount" value={formatCurrency(customer.pendingAmount)} tone="amber" />
+          <SummaryTile label="Pending Days" value={customer.pendingDays || 0} tone="sky" />
+        </div>
       </section>
 
       <section className="card p-5">
-        <h3 className="section-title mb-4">Personal Details</h3>
+        <SectionHeader>Personal Details</SectionHeader>
         <dl className="grid gap-4 md:grid-cols-3">
           <DetailItem label="Mobile Number" value={formatPhone(customer.mobile)} />
           <DetailItem label="Alternate Mobile" value={formatPhone(customer.alternateMobile)} />
-          <DetailItem label="Area" value={customer.area} />
-          <DetailItem label="Daily Amount" value={formatCurrency(customer.dailyAmount)} />
-          <DetailItem label="Joining Date" value={formatDate(customer.joiningDate)} />
-          <DetailItem label="ID Proof" value={[customer.idProofType, customer.idProofNumber].filter(Boolean).join(' - ')} />
           <DetailItem label="Address" value={customer.address} />
+          <DetailItem label="Area" value={customer.area} />
+          <DetailItem label="Joining Date" value={formatDate(customer.joiningDate)} />
         </dl>
       </section>
 
       <section className="card p-5">
-        <h3 className="section-title mb-4">Notes</h3>
+        <SectionHeader>Document Details</SectionHeader>
+        <dl className="grid gap-4 md:grid-cols-2">
+          <DetailItem label="ID Proof Type" value={customer.idProofType} />
+          <DetailItem label="ID Proof Number" value={customer.idProofNumber} />
+        </dl>
+      </section>
+
+      <section className="card p-5">
+        <SectionHeader>Notes</SectionHeader>
         <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{customer.notes || 'No notes added.'}</p>
       </section>
 
       <section className="card p-4 md:p-5">
-        <h3 className="section-title mb-4">Collection History</h3>
+        <SectionHeader>Collection History</SectionHeader>
         <TableComponent
           columns={collectionColumns}
           rows={collections}
@@ -155,7 +168,7 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
           <div className="inline-flex items-center gap-2 text-sm text-slate-600">
             <FiCreditCard />
             {activeLoans.length
-              ? `${activeLoans.length} active, ${formatCurrency(outstandingLoanAmount)} outstanding`
+              ? `${activeLoans.length} active loan${activeLoans.length > 1 ? 's' : ''}, ${formatCurrency(outstandingLoanAmount)} outstanding`
               : 'No active loan for this customer.'}
           </div>
         </div>

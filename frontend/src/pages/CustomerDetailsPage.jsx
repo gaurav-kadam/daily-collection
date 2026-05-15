@@ -18,28 +18,49 @@ function CustomerDetailsPage() {
   const [loans, setLoans] = useState([])
 
   useEffect(() => {
+    let isMounted = true
+
     const fetchDetails = async () => {
       setLoading(true)
       setError('')
       try {
-        const [customerData, collectionData, loanData] = await Promise.all([
-          customerService.getById(customerId),
-          collectionService.getAll({ customer_id: customerId, currentUser: user, pageSize: 25 }),
-          user?.role === 'admin'
-            ? loanService.getAll({ customer_id: customerId, pageSize: 25 })
-            : Promise.resolve([]),
-        ])
+        const customerData = await customerService.getById(customerId)
+        if (!isMounted) return
+
         setCustomer(customerData)
-        setCollections(Array.isArray(collectionData) ? collectionData : collectionData.results || [])
-        setLoans(Array.isArray(loanData) ? loanData : loanData.results || [])
-      } catch {
-        setError('Unable to load customer details.')
+        const resolvedCustomerId = customerData.id || customerData.customerId || customerId
+        try {
+          const [collectionData, loanData] = await Promise.all([
+            collectionService.getAll({ customer_id: resolvedCustomerId, currentUser: user, pageSize: 25 }),
+            user?.role === 'admin'
+              ? loanService.getAll({ customer_id: resolvedCustomerId, pageSize: 25 })
+              : Promise.resolve([]),
+          ])
+          if (!isMounted) return
+          setCollections(Array.isArray(collectionData) ? collectionData : collectionData.results || [])
+          setLoans(Array.isArray(loanData) ? loanData : loanData.results || [])
+        } catch {
+          if (!isMounted) return
+          setCollections([])
+          setLoans([])
+          setError('Customer loaded, but recent history could not be loaded.')
+        }
+      } catch (exception) {
+        if (!isMounted) return
+        setCustomer(null)
+        setCollections([])
+        setLoans([])
+        setError(exception.message || 'Unable to load customer details.')
       } finally {
-        setLoading(false)
+        if (isMounted) setLoading(false)
       }
     }
 
     fetchDetails()
+
+    return () => {
+      isMounted = false
+    }
   }, [customerId, user])
 
   if (loading) return <Loader text="Loading customer details..." />
@@ -47,7 +68,9 @@ function CustomerDetailsPage() {
   if (!customer) {
     return (
       <div className="card p-6">
-        <p className="text-slate-700">Customer not found.</p>
+        <p className="text-slate-700">
+          {error === 'Customer not found.' ? 'Customer not found.' : 'Unable to load customer details.'}
+        </p>
       </div>
     )
   }
@@ -64,7 +87,7 @@ function CustomerDetailsPage() {
             Back
           </Link>
           {user?.role === 'admin' && (
-            <Link to={`/customers/${customerId}/edit`} className="btn-primary inline-flex items-center gap-2">
+            <Link to={`/customers/${customer.id || customerId}/edit`} className="btn-primary inline-flex items-center gap-2">
               <FiEdit2 /> Edit
             </Link>
           )}
