@@ -15,7 +15,7 @@ export const USER_ROLES = {
 }
 
 export const PAYMENT_METHODS = ['cash', 'online']
-export const CUSTOMER_STATUSES = ['active', 'inactive']
+export const CUSTOMER_STATUSES = ['active', 'inactive', 'blocked']
 export const LOAN_STATUSES = ['pending', 'active', 'completed', 'rejected']
 
 export const FINANCE_RULES = {
@@ -59,10 +59,25 @@ export const moneyValue = (record, rupeeField, paiseField = `${rupeeField}Paise`
 
 export const normalizeText = (value) => String(value || '').trim()
 
+export const normalizeSearchText = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+
 export const makeSearchKeywords = (...parts) => {
-  const text = parts.filter(Boolean).join(' ').toLowerCase()
-  const tokens = text.split(/[^a-z0-9]+/).filter(Boolean)
-  return [...new Set(tokens)]
+  const text = normalizeSearchText(parts.filter(Boolean).join(' '))
+  const tokens = text.split(/\s+/).filter(Boolean)
+  const keywords = new Set(tokens)
+
+  tokens.forEach((token) => {
+    const maxLength = Math.min(token.length, 24)
+    for (let length = 2; length <= maxLength; length += 1) {
+      keywords.add(token.slice(0, length))
+    }
+  })
+
+  return [...keywords]
 }
 
 export const parseDateKey = (value) => {

@@ -20,6 +20,7 @@ import {
   makeSearchKeywords,
   moneyToPaise,
   normalizeMoney,
+  normalizeSearchText,
   normalizeText,
   pageLimit,
 } from './firestoreService'
@@ -69,17 +70,28 @@ export const listenCollectors = (callback, onError) =>
   )
 
 export const createCustomer = async (payload, currentUser) => {
-  const customerReference = doc(customersRef)
+  const customerReference = payload.customerReference || doc(customersRef)
   const dailyAmountPaise = moneyToPaise(payload.dailyAmount)
   const dailyAmount = normalizeMoney(payload.dailyAmount)
+  const photoUrl = normalizeText(payload.photoUrl || payload.photo)
+  const shopName = normalizeText(payload.shopName)
+  const ownerName = normalizeText(payload.ownerName)
+  const mobile = normalizeText(payload.mobile)
+  const alternateMobile = normalizeText(payload.alternateMobile)
+  const area = normalizeText(payload.area)
 
   const record = {
     customerId: customerReference.id,
-    shopName: normalizeText(payload.shopName),
-    ownerName: normalizeText(payload.ownerName),
-    mobile: normalizeText(payload.mobile),
-    alternateMobile: normalizeText(payload.alternateMobile),
-    area: normalizeText(payload.area),
+    shopName,
+    shopNameLower: normalizeSearchText(shopName),
+    ownerName,
+    ownerNameLower: normalizeSearchText(ownerName),
+    mobile,
+    mobileSearch: normalizeSearchText(mobile),
+    alternateMobile,
+    alternateMobileSearch: normalizeSearchText(alternateMobile),
+    area,
+    areaLower: normalizeSearchText(area),
     address: normalizeText(payload.address),
     dailyAmount,
     dailyAmountPaise,
@@ -100,12 +112,14 @@ export const createCustomer = async (payload, currentUser) => {
     idProofType: normalizeText(payload.idProofType),
     idProofNumber: normalizeText(payload.idProofNumber),
     notes: normalizeText(payload.notes),
-    photo: normalizeText(payload.photo),
+    photoUrl,
+    photo: photoUrl,
     searchKeywords: makeSearchKeywords(
-      payload.shopName,
-      payload.ownerName,
-      payload.mobile,
-      payload.area,
+      shopName,
+      ownerName,
+      mobile,
+      alternateMobile,
+      area,
     ),
     createdById: currentUser?.userId || auth.currentUser?.uid || '',
     createdAt: serverTimestamp(),
@@ -148,6 +162,50 @@ export const getAll = async ({
   return response
 }
 
+export const searchCustomers = async ({
+  term,
+  pageSize = 25,
+  currentUser,
+} = {}) => {
+  const normalizedTerm = normalizeSearchText(term)
+  const tokens = normalizedTerm.split(/\s+/).filter(Boolean)
+  const searchToken = tokens[0]
+  if (!searchToken || searchToken.length < 2) {
+    return { results: [], count: 0 }
+  }
+
+  const constraints = [where('searchKeywords', 'array-contains', searchToken)]
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.unshift(where('assignedCollectorId', '==', currentUser.userId))
+  }
+  constraints.push(limit(pageLimit(pageSize, 25, 50)))
+
+  const snapshot = await getDocs(query(customersRef, ...constraints))
+  const results = docsWithIds(snapshot)
+    .filter((customer) => {
+      if (tokens.length <= 1) return true
+      const searchableText = normalizeSearchText(
+        [
+          customer.shopName,
+          customer.ownerName,
+          customer.mobile,
+          customer.alternateMobile,
+          customer.area,
+        ].join(' '),
+      )
+      return tokens.every((token) => searchableText.includes(token))
+    })
+    .sort((first, second) =>
+      String(first.shopName || '').localeCompare(String(second.shopName || '')),
+    )
+
+  results.forEach(cacheCustomer)
+  return {
+    results,
+    count: results.length,
+  }
+}
+
 export const getById = async (customerId) => {
   const cached = getCachedValue(customerCache.get(customerId))
   if (cached) return cached
@@ -180,48 +238,45 @@ export const getMeta = async () => {
   return metaCache.value
 }
 
-export const create = async (payload, currentUser) => {
-  const existing = await getDocs(
-    query(customersRef, where('mobile', '==', normalizeText(payload.mobile)), limit(1)),
-  )
-  if (!existing.empty) {
-    throw new Error('A customer with this mobile number already exists.')
-  }
-
+export const create = async (payload, currentUser, { onUploadProgress } = {}) => {
+  const customerReference = doc(customersRef)
+  const photoUrl = payload.photoFile
+    ? await uploadCustomerPhoto(customerReference.id, payload.photoFile, onUploadProgress)
+    : normalizeText(payload.photoUrl || payload.photo)
   const selectedCollector = payload.assignedCollectorId
     ? (await getDoc(doc(db, COLLECTIONS.users, payload.assignedCollectorId))).data()
     : null
-  const created = await createCustomer(
+  return createCustomer(
     {
       ...payload,
+      customerReference,
+      photoUrl,
+      photo: photoUrl,
       assignedCollectorName:
         payload.assignedCollectorName || selectedCollector?.fullName || '',
     },
     currentUser || { userId: auth.currentUser?.uid || '' },
   )
-
-  if (payload.photoFile) {
-    const photo = await uploadCustomerPhoto(created.customerId, payload.photoFile)
-    await updateDoc(doc(db, COLLECTIONS.customers, created.customerId), {
-      photo,
-      updatedAt: serverTimestamp(),
-    })
-    customerCache.delete(created.customerId)
-    listCache.clear()
-    return { ...created, photo }
-  }
-
-  return created
 }
 
-export const update = async (customerId, payload) => {
+export const update = async (customerId, payload, _currentUser, { onUploadProgress } = {}) => {
   const dailyAmount = normalizeMoney(payload.dailyAmount)
+  const shopName = normalizeText(payload.shopName)
+  const ownerName = normalizeText(payload.ownerName)
+  const mobile = normalizeText(payload.mobile)
+  const alternateMobile = normalizeText(payload.alternateMobile)
+  const area = normalizeText(payload.area)
   const updates = {
-    shopName: normalizeText(payload.shopName),
-    ownerName: normalizeText(payload.ownerName),
-    mobile: normalizeText(payload.mobile),
-    alternateMobile: normalizeText(payload.alternateMobile),
-    area: normalizeText(payload.area),
+    shopName,
+    shopNameLower: normalizeSearchText(shopName),
+    ownerName,
+    ownerNameLower: normalizeSearchText(ownerName),
+    mobile,
+    mobileSearch: normalizeSearchText(mobile),
+    alternateMobile,
+    alternateMobileSearch: normalizeSearchText(alternateMobile),
+    area,
+    areaLower: normalizeSearchText(area),
     address: normalizeText(payload.address),
     dailyAmount,
     dailyAmountPaise: moneyToPaise(payload.dailyAmount),
@@ -233,20 +288,26 @@ export const update = async (customerId, payload) => {
     idProofNumber: normalizeText(payload.idProofNumber),
     notes: normalizeText(payload.notes),
     searchKeywords: makeSearchKeywords(
-      payload.shopName,
-      payload.ownerName,
-      payload.mobile,
-      payload.area,
+      shopName,
+      ownerName,
+      mobile,
+      alternateMobile,
+      area,
     ),
     updatedAt: serverTimestamp(),
   }
 
   if (payload.removePhoto) {
+    updates.photoUrl = ''
     updates.photo = ''
   } else if (payload.photoFile) {
-    updates.photo = await uploadCustomerPhoto(customerId, payload.photoFile)
-  } else if (payload.photo !== undefined) {
-    updates.photo = normalizeText(payload.photo)
+    const photoUrl = await uploadCustomerPhoto(customerId, payload.photoFile, onUploadProgress)
+    updates.photoUrl = photoUrl
+    updates.photo = photoUrl
+  } else if (payload.photoUrl !== undefined || payload.photo !== undefined) {
+    const photoUrl = normalizeText(payload.photoUrl || payload.photo)
+    updates.photoUrl = photoUrl
+    updates.photo = photoUrl
   }
 
   if (updates.assignedCollectorId && !updates.assignedCollectorName) {
@@ -267,6 +328,7 @@ export default {
   getAll,
   getById,
   getMeta,
+  searchCustomers,
   create,
   update,
 }

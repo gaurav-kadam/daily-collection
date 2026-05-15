@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { FiImage, FiTrash2, FiUpload } from 'react-icons/fi'
 
-function ImageUploader({ value, file, onChange, onRemove, error }) {
+function ImageUploader({ value, file, onChange, onRemove, error, progress = null, disabled = false }) {
   const [preview, setPreview] = useState(value || '')
 
   useEffect(() => {
@@ -14,7 +14,8 @@ function ImageUploader({ value, file, onChange, onRemove, error }) {
     return () => URL.revokeObjectURL(objectUrl)
   }, [file, value])
 
-  const label = useMemo(() => file?.name || (preview ? 'Customer photo selected' : 'Upload photo'), [file, preview])
+  const label = useMemo(() => file?.name || (preview ? 'Replace photo' : 'Upload photo'), [file, preview])
+  const progressValue = typeof progress === 'number' ? Math.min(Math.max(progress, 0), 100) : null
 
   return (
     <div className="space-y-2">
@@ -22,7 +23,7 @@ function ImageUploader({ value, file, onChange, onRemove, error }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
           {preview ? (
-            <img src={preview} alt="Customer" className="h-full w-full object-cover" />
+            <img src={preview} alt="Customer" className="h-full w-full object-cover" loading="lazy" />
           ) : (
             <FiImage className="text-2xl text-slate-400" />
           )}
@@ -35,6 +36,7 @@ function ImageUploader({ value, file, onChange, onRemove, error }) {
               type="file"
               accept="image/png,image/jpeg,image/webp"
               className="sr-only"
+              disabled={disabled}
               onChange={(event) => onChange(event.target.files?.[0] || null)}
             />
           </label>
@@ -43,13 +45,25 @@ function ImageUploader({ value, file, onChange, onRemove, error }) {
               type="button"
               className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-white px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
               onClick={onRemove}
+              disabled={disabled}
             >
               <FiTrash2 />
-              Remove
+              {file ? 'Clear selected' : 'Remove'}
             </button>
           )}
         </div>
       </div>
+      {progressValue !== null && (
+        <div className="max-w-md">
+          <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-cyan-600 transition-all"
+              style={{ width: `${progressValue}%` }}
+            />
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Uploading photo {progressValue}%</p>
+        </div>
+      )}
       {error && <p className="text-xs text-rose-600">{error}</p>}
     </div>
   )

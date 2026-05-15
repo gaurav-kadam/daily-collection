@@ -29,6 +29,13 @@ function SummaryTile({ label, value, tone = 'slate' }) {
 }
 
 function CustomerProfile({ customer, collections = [], loans = [] }) {
+  const photoUrl = customer.photoUrl || customer.photo
+  const activeLoans = loans.filter((loan) => (loan.loanStatus || loan.status) === 'active')
+  const outstandingLoanAmount = loans.reduce(
+    (total, loan) => total + Number(loan.remainingBalance || loan.remaining_balance || 0),
+    0,
+  )
+
   const collectionColumns = [
     { header: 'Date', accessor: 'date', render: (row) => formatDate(row.date || row.collection_date) },
     {
@@ -52,6 +59,11 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
       accessor: 'paidInstallments',
       render: (row) => `${row.paidInstallments || row.paid_installments || 0}/${row.loanDurationMonths || row.total_installments || 0}`,
     },
+    {
+      header: 'Outstanding',
+      accessor: 'remainingBalance',
+      render: (row) => formatCurrency(row.remainingBalance || row.remaining_balance),
+    },
     { header: 'Status', accessor: 'loanStatus', render: (row) => row.loanStatus || row.status },
   ]
 
@@ -61,8 +73,13 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
         <div className="card p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100">
-              {customer.photo ? (
-                <img src={customer.photo} alt={customer.shopName} className="h-full w-full object-cover" />
+              {photoUrl ? (
+                <img
+                  src={photoUrl}
+                  alt={customer.shopName}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
               ) : (
                 <FiUser className="text-3xl text-slate-400" />
               )}
@@ -72,13 +89,16 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
                 <h2 className="page-title truncate">{customer.shopName}</h2>
                 <StatusBadge status={customer.status} />
               </div>
-              <p className="mt-1 text-sm text-slate-600">Customer ID: {customer.customerId}</p>
+              <p className="mt-1 text-sm text-slate-600">Customer ID: {customer.customerId || customer.id}</p>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <p className="inline-flex items-center gap-2 text-sm text-slate-700">
                   <FiUser /> {customer.ownerName}
                 </p>
                 <p className="inline-flex items-center gap-2 text-sm text-slate-700">
                   <FiPhone /> {formatPhone(customer.mobile)}
+                </p>
+                <p className="inline-flex items-center gap-2 text-sm text-slate-700">
+                  <FiPhone /> {formatPhone(customer.alternateMobile)}
                 </p>
                 <p className="inline-flex items-center gap-2 text-sm text-slate-700 sm:col-span-2">
                   <FiMapPin /> {customer.address}
@@ -99,30 +119,47 @@ function CustomerProfile({ customer, collections = [], loans = [] }) {
         <SummaryTile label="Total Savings" value={formatCurrency(customer.totalSavings)} tone="emerald" />
         <SummaryTile label="Pending Amount" value={formatCurrency(customer.pendingAmount)} tone="amber" />
         <SummaryTile label="Pending Days" value={customer.pendingDays || 0} />
-        <SummaryTile label="Loan Status" value={customer.loanStatus ? 'Active' : 'None'} tone="sky" />
+        <SummaryTile label="Active Loans" value={activeLoans.length} tone="sky" />
       </section>
 
       <section className="card p-5">
         <h3 className="section-title mb-4">Personal Details</h3>
         <dl className="grid gap-4 md:grid-cols-3">
+          <DetailItem label="Mobile Number" value={formatPhone(customer.mobile)} />
           <DetailItem label="Alternate Mobile" value={formatPhone(customer.alternateMobile)} />
+          <DetailItem label="Area" value={customer.area} />
           <DetailItem label="Daily Amount" value={formatCurrency(customer.dailyAmount)} />
+          <DetailItem label="Joining Date" value={formatDate(customer.joiningDate)} />
           <DetailItem label="ID Proof" value={[customer.idProofType, customer.idProofNumber].filter(Boolean).join(' - ')} />
-          <DetailItem label="Notes" value={customer.notes} />
+          <DetailItem label="Address" value={customer.address} />
         </dl>
+      </section>
+
+      <section className="card p-5">
+        <h3 className="section-title mb-4">Notes</h3>
+        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{customer.notes || 'No notes added.'}</p>
       </section>
 
       <section className="card p-4 md:p-5">
         <h3 className="section-title mb-4">Collection History</h3>
-        <TableComponent columns={collectionColumns} rows={collections} />
+        <TableComponent
+          columns={collectionColumns}
+          rows={collections}
+          emptyMessage="No collections recorded for this customer yet."
+        />
       </section>
 
       <section className="card p-4 md:p-5">
-        <h3 className="section-title mb-4">Loan Summary</h3>
-        <div className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600">
-          <FiCreditCard /> {customer.loanStatus ? 'Customer has an active loan.' : 'No active loan for this customer.'}
+        <div className="mb-4 flex flex-col justify-between gap-3 md:flex-row md:items-center">
+          <h3 className="section-title">Loan Summary</h3>
+          <div className="inline-flex items-center gap-2 text-sm text-slate-600">
+            <FiCreditCard />
+            {activeLoans.length
+              ? `${activeLoans.length} active, ${formatCurrency(outstandingLoanAmount)} outstanding`
+              : 'No active loan for this customer.'}
+          </div>
         </div>
-        <TableComponent columns={loanColumns} rows={loans} />
+        <TableComponent columns={loanColumns} rows={loans} emptyMessage="No loans recorded for this customer." />
       </section>
     </div>
   )

@@ -10,38 +10,45 @@ function AddCustomerPage() {
   const { user } = useAuth()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(null)
   const [error, setError] = useState('')
   const [meta, setMeta] = useState({ collectors: [] })
-  const [existingCustomers, setExistingCustomers] = useState([])
+  const [areaOptions, setAreaOptions] = useState([])
 
   useEffect(() => {
     const loadData = async () => {
       try {
         const [metaData, customerData] = await Promise.all([
           customerService.getMeta(),
-          customerService.getAll({ pageSize: 100 }),
+          customerService.getAll({ currentUser: user, pageSize: 200 }),
         ])
         setMeta(metaData)
-        setExistingCustomers(customerData.results || [])
+        setAreaOptions(
+          [...new Set((customerData.results || []).map((customer) => customer.area).filter(Boolean))],
+        )
       } catch {
         setError('Unable to prepare customer form.')
       } finally {
         setLoading(false)
       }
     }
-    loadData()
-  }, [])
+    if (user) loadData()
+  }, [user])
 
   const handleSubmit = async (payload) => {
     setSaving(true)
+    setUploadProgress(payload.photoFile ? 0 : null)
     setError('')
     try {
-      const created = await customerService.create(payload, user)
-      navigate(`/customers/${created.id}`)
+      const created = await customerService.create(payload, user, {
+        onUploadProgress: setUploadProgress,
+      })
+      navigate(`/customers/${created.customerId || created.id}`)
     } catch (exception) {
-      setError(exception.response?.data?.mobile || 'Unable to save customer. Check required fields.')
+      setError(exception.message || 'Unable to save customer. Check required fields.')
     } finally {
       setSaving(false)
+      setUploadProgress(null)
     }
   }
 
@@ -62,8 +69,9 @@ function AddCustomerPage() {
       <section className="card p-5">
         <CustomerForm
           collectors={meta.collectors || []}
-          existingCustomers={existingCustomers}
+          areaOptions={areaOptions}
           saving={saving}
+          uploadProgress={uploadProgress}
           submitLabel="Create Customer"
           onSubmit={handleSubmit}
         />

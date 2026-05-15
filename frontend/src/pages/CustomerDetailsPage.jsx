@@ -24,8 +24,10 @@ function CustomerDetailsPage() {
       try {
         const [customerData, collectionData, loanData] = await Promise.all([
           customerService.getById(customerId),
-          collectionService.getAll({ customer_id: customerId, currentUser: user }),
-          user?.role === 'admin' ? loanService.getAll({ customer_id: customerId }) : Promise.resolve([]),
+          collectionService.getAll({ customer_id: customerId, currentUser: user, pageSize: 25 }),
+          user?.role === 'admin'
+            ? loanService.getAll({ customer_id: customerId, pageSize: 25 })
+            : Promise.resolve([]),
         ])
         setCustomer(customerData)
         setCollections(Array.isArray(collectionData) ? collectionData : collectionData.results || [])

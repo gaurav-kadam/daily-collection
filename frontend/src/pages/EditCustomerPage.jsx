@@ -11,10 +11,11 @@ function EditCustomerPage() {
   const { user } = useAuth()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(null)
   const [error, setError] = useState('')
   const [customer, setCustomer] = useState(null)
   const [meta, setMeta] = useState({ collectors: [] })
-  const [existingCustomers, setExistingCustomers] = useState([])
+  const [areaOptions, setAreaOptions] = useState([])
 
   useEffect(() => {
     const loadData = async () => {
@@ -24,11 +25,13 @@ function EditCustomerPage() {
         const [customerData, metaData, customerList] = await Promise.all([
           customerService.getById(customerId),
           customerService.getMeta(),
-          customerService.getAll({ pageSize: 100 }),
+          customerService.getAll({ currentUser: user, pageSize: 200 }),
         ])
         setCustomer(customerData)
         setMeta(metaData)
-        setExistingCustomers(customerList.results || [])
+        setAreaOptions(
+          [...new Set((customerList.results || []).map((record) => record.area).filter(Boolean))],
+        )
       } catch {
         setError('Unable to load customer.')
       } finally {
@@ -36,18 +39,22 @@ function EditCustomerPage() {
       }
     }
     loadData()
-  }, [customerId])
+  }, [customerId, user])
 
   const handleSubmit = async (payload) => {
     setSaving(true)
+    setUploadProgress(payload.photoFile ? 0 : null)
     setError('')
     try {
-      await customerService.update(customerId, payload, user)
+      await customerService.update(customerId, payload, user, {
+        onUploadProgress: setUploadProgress,
+      })
       navigate(`/customers/${customerId}`)
     } catch (exception) {
-      setError(exception.response?.data?.mobile || 'Unable to update customer.')
+      setError(exception.message || 'Unable to update customer.')
     } finally {
       setSaving(false)
+      setUploadProgress(null)
     }
   }
 
@@ -73,9 +80,9 @@ function EditCustomerPage() {
         <CustomerForm
           initialValues={customer}
           collectors={meta.collectors || []}
-          existingCustomers={existingCustomers}
-          currentCustomerId={customerId}
+          areaOptions={areaOptions}
           saving={saving}
+          uploadProgress={uploadProgress}
           submitLabel="Update Customer"
           onSubmit={handleSubmit}
         />

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import FormInput from '../FormInput'
+import { todayISO } from '../../utils/date'
 import ImageUploader from './ImageUploader'
 
 const initialState = {
@@ -18,24 +19,25 @@ const initialState = {
   status: 'active',
   notes: '',
   photo: '',
+  photoUrl: '',
   photoFile: null,
   removePhoto: false,
 }
 
-const idProofOptions = ['', 'Aadhaar', 'PAN', 'Voter ID', 'Driving License', 'Other']
+const idProofOptions = ['', 'Aadhaar', 'PAN', 'Driving License', 'Voter ID', 'Other']
 
 function validateImage(file) {
   if (!file) return ''
   if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
     return 'Only JPG, PNG, and WEBP images are allowed.'
   }
-  if (file.size > 2 * 1024 * 1024) {
-    return 'Photo must be 2MB or smaller.'
+  if (file.size >= 2 * 1024 * 1024) {
+    return 'Photo must be smaller than 2MB.'
   }
   return ''
 }
 
-function validate(values, existingCustomers, currentCustomerId) {
+function validate(values) {
   const errors = {}
   const mobilePattern = /^\d{10}$/
   if (!values.shopName.trim()) errors.shopName = 'Shop name is required.'
@@ -48,11 +50,6 @@ function validate(values, existingCustomers, currentCustomerId) {
   if (!values.area.trim()) errors.area = 'Area is required.'
   if (Number(values.dailyAmount) <= 0) errors.dailyAmount = 'Daily amount must be positive.'
 
-  const duplicate = existingCustomers.find(
-    (customer) => customer.id !== currentCustomerId && String(customer.mobile) === String(values.mobile),
-  )
-  if (duplicate) errors.mobile = 'A customer with this mobile number already exists.'
-
   const imageError = validateImage(values.photoFile)
   if (imageError) errors.photoFile = imageError
   return errors
@@ -61,18 +58,27 @@ function validate(values, existingCustomers, currentCustomerId) {
 function CustomerForm({
   initialValues,
   collectors = [],
-  existingCustomers = [],
-  currentCustomerId,
+  areaOptions = [],
   submitLabel = 'Save Customer',
   saving = false,
+  uploadProgress = null,
   onSubmit,
 }) {
-  const [values, setValues] = useState({ ...initialState, ...initialValues })
+  const [values, setValues] = useState({
+    ...initialState,
+    joiningDate: todayISO(),
+    ...initialValues,
+    photoUrl: initialValues?.photoUrl || initialValues?.photo || '',
+  })
   const [errors, setErrors] = useState({})
 
   const collectorOptions = useMemo(
     () => collectors.filter((collector) => collector.status !== 'inactive'),
     [collectors],
+  )
+  const areaSuggestions = useMemo(
+    () => [...new Set(areaOptions.filter(Boolean).map((area) => String(area).trim()).filter(Boolean))].sort(),
+    [areaOptions],
   )
 
   const handleChange = (event) => {
@@ -92,12 +98,12 @@ function CustomerForm({
   }
 
   const handleRemoveImage = () => {
-    setValues((previous) => ({ ...previous, photo: '', photoFile: null, removePhoto: true }))
+    setValues((previous) => ({ ...previous, photo: '', photoUrl: '', photoFile: null, removePhoto: true }))
   }
 
   const handleSubmit = (event) => {
     event.preventDefault()
-    const nextErrors = validate(values, existingCustomers, currentCustomerId)
+    const nextErrors = validate(values)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) return
 
@@ -110,22 +116,57 @@ function CustomerForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <section className="grid gap-4 md:grid-cols-2">
-        <FormInput label="Shop Name" name="shopName" value={values.shopName} onChange={handleChange} required />
-        {errors.shopName && <p className="-mt-3 text-xs text-rose-600 md:col-start-1">{errors.shopName}</p>}
-        <FormInput label="Owner Name" name="ownerName" value={values.ownerName} onChange={handleChange} required />
-        {errors.ownerName && <p className="-mt-3 text-xs text-rose-600 md:col-start-2">{errors.ownerName}</p>}
-        <FormInput label="Mobile Number" name="mobile" value={values.mobile} onChange={handleChange} required />
+        <FormInput
+          label="Shop Name"
+          name="shopName"
+          value={values.shopName}
+          onChange={handleChange}
+          error={errors.shopName}
+          required
+        />
+        <FormInput
+          label="Owner Name"
+          name="ownerName"
+          value={values.ownerName}
+          onChange={handleChange}
+          error={errors.ownerName}
+          required
+        />
+        <FormInput
+          label="Mobile Number"
+          name="mobile"
+          value={values.mobile}
+          onChange={handleChange}
+          inputMode="numeric"
+          maxLength="10"
+          error={errors.mobile}
+          required
+        />
         <FormInput
           label="Alternate Mobile"
           name="alternateMobile"
           value={values.alternateMobile}
           onChange={handleChange}
+          inputMode="numeric"
+          maxLength="10"
+          error={errors.alternateMobile}
         />
-        {errors.mobile && <p className="-mt-3 text-xs text-rose-600 md:col-start-1">{errors.mobile}</p>}
-        {errors.alternateMobile && (
-          <p className="-mt-3 text-xs text-rose-600 md:col-start-2">{errors.alternateMobile}</p>
+        <FormInput
+          label="Area"
+          name="area"
+          value={values.area}
+          onChange={handleChange}
+          list={areaSuggestions.length ? 'customer-area-options' : undefined}
+          error={errors.area}
+          required
+        />
+        {areaSuggestions.length > 0 && (
+          <datalist id="customer-area-options">
+            {areaSuggestions.map((area) => (
+              <option key={area} value={area} />
+            ))}
+          </datalist>
         )}
-        <FormInput label="Area" name="area" value={values.area} onChange={handleChange} required />
         <FormInput
           label="Daily Amount"
           name="dailyAmount"
@@ -133,10 +174,9 @@ function CustomerForm({
           min="1"
           value={values.dailyAmount}
           onChange={handleChange}
+          error={errors.dailyAmount}
           required
         />
-        {errors.area && <p className="-mt-3 text-xs text-rose-600 md:col-start-1">{errors.area}</p>}
-        {errors.dailyAmount && <p className="-mt-3 text-xs text-rose-600 md:col-start-2">{errors.dailyAmount}</p>}
         <FormInput
           label="Joining Date"
           name="joiningDate"
@@ -181,19 +221,29 @@ function CustomerForm({
           <select name="status" value={values.status} onChange={handleChange} className="input-field">
             <option value="active">Active</option>
             <option value="inactive">Inactive</option>
+            <option value="blocked">Blocked</option>
           </select>
         </label>
         <div className="md:col-span-2">
-          <FormInput label="Address" name="address" value={values.address} onChange={handleChange} as="textarea" required />
-          {errors.address && <p className="mt-1 text-xs text-rose-600">{errors.address}</p>}
+          <FormInput
+            label="Address"
+            name="address"
+            value={values.address}
+            onChange={handleChange}
+            as="textarea"
+            error={errors.address}
+            required
+          />
         </div>
         <div className="md:col-span-2">
           <ImageUploader
-            value={values.photo}
+            value={values.photoUrl || values.photo}
             file={values.photoFile}
             onChange={handleImageChange}
             onRemove={handleRemoveImage}
             error={errors.photoFile}
+            progress={uploadProgress}
+            disabled={saving}
           />
         </div>
         <div className="md:col-span-2">
