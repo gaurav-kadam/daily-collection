@@ -1,0 +1,8 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
