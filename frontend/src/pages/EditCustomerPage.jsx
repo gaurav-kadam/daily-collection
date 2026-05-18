@@ -43,11 +43,20 @@ function EditCustomerPage() {
 
   const handleSubmit = async (payload) => {
     setSaving(true)
-    setUploadProgress(payload.photoFile ? 0 : null)
+    setUploadProgress(
+      payload.profilePhotoFile || payload.documentPhotoFile
+        ? {
+            profilePhoto: payload.profilePhotoFile ? 0 : null,
+            documentPhoto: payload.documentPhotoFile ? 0 : null,
+          }
+        : null,
+    )
     setError('')
     try {
       await customerService.update(customerId, payload, user, {
-        onUploadProgress: setUploadProgress,
+        onUploadProgress: ({ field, progress }) => {
+          setUploadProgress((previous) => ({ ...(previous || {}), [field]: progress }))
+        },
       })
       navigate(`/customers/${customerId}`)
     } catch (exception) {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import FormInput from '../FormInput'
 import { todayISO } from '../../utils/date'
+import { validateCloudinaryImage } from '../../services/cloudinaryService'
 import ImageUploader from './ImageUploader'
 
 const initialState = {
@@ -20,22 +21,15 @@ const initialState = {
   notes: '',
   photo: '',
   photoUrl: '',
-  photoFile: null,
+  profilePhotoUrl: '',
+  documentPhotoUrl: '',
+  profilePhotoFile: null,
+  documentPhotoFile: null,
   removePhoto: false,
+  removeDocumentPhoto: false,
 }
 
 const idProofOptions = ['', 'Aadhaar', 'PAN', 'Driving License', 'Voter ID', 'Other']
-
-function validateImage(file) {
-  if (!file) return ''
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-    return 'Only JPG, PNG, and WEBP images are allowed.'
-  }
-  if (file.size >= 2 * 1024 * 1024) {
-    return 'Photo must be smaller than 2MB.'
-  }
-  return ''
-}
 
 function validate(values) {
   const errors = {}
@@ -50,8 +44,10 @@ function validate(values) {
   if (!values.area.trim()) errors.area = 'Area is required.'
   if (Number(values.dailyAmount) <= 0) errors.dailyAmount = 'Daily amount must be positive.'
 
-  const imageError = validateImage(values.photoFile)
-  if (imageError) errors.photoFile = imageError
+  const profileImageError = validateCloudinaryImage(values.profilePhotoFile)
+  const documentImageError = validateCloudinaryImage(values.documentPhotoFile)
+  if (profileImageError) errors.profilePhotoFile = profileImageError
+  if (documentImageError) errors.documentPhotoFile = documentImageError
   return errors
 }
 
@@ -68,6 +64,9 @@ function CustomerForm({
     ...initialState,
     joiningDate: todayISO(),
     ...initialValues,
+    profilePhotoUrl:
+      initialValues?.profilePhotoUrl || initialValues?.photoUrl || initialValues?.photo || '',
+    documentPhotoUrl: initialValues?.documentPhotoUrl || '',
     photoUrl: initialValues?.photoUrl || initialValues?.photo || '',
   })
   const [errors, setErrors] = useState({})
@@ -93,12 +92,32 @@ function CustomerForm({
     })
   }
 
-  const handleImageChange = (file) => {
-    setValues((previous) => ({ ...previous, photoFile: file, removePhoto: false }))
+  const handleProfileImageChange = (file) => {
+    setValues((previous) => ({ ...previous, profilePhotoFile: file, removePhoto: false }))
   }
 
-  const handleRemoveImage = () => {
-    setValues((previous) => ({ ...previous, photo: '', photoUrl: '', photoFile: null, removePhoto: true }))
+  const handleRemoveProfileImage = () => {
+    setValues((previous) => ({
+      ...previous,
+      photo: '',
+      photoUrl: '',
+      profilePhotoUrl: '',
+      profilePhotoFile: null,
+      removePhoto: true,
+    }))
+  }
+
+  const handleDocumentImageChange = (file) => {
+    setValues((previous) => ({ ...previous, documentPhotoFile: file, removeDocumentPhoto: false }))
+  }
+
+  const handleRemoveDocumentImage = () => {
+    setValues((previous) => ({
+      ...previous,
+      documentPhotoUrl: '',
+      documentPhotoFile: null,
+      removeDocumentPhoto: true,
+    }))
   }
 
   const handleSubmit = (event) => {
@@ -237,12 +256,35 @@ function CustomerForm({
         </div>
         <div className="md:col-span-2">
           <ImageUploader
-            value={values.photoUrl || values.photo}
-            file={values.photoFile}
-            onChange={handleImageChange}
-            onRemove={handleRemoveImage}
-            error={errors.photoFile}
-            progress={uploadProgress}
+            label="Profile Photo"
+            emptyLabel="Upload profile photo"
+            replaceLabel="Replace profile photo"
+            alt="Customer profile"
+            value={values.profilePhotoUrl || values.photoUrl || values.photo}
+            file={values.profilePhotoFile}
+            onChange={handleProfileImageChange}
+            onRemove={handleRemoveProfileImage}
+            error={errors.profilePhotoFile}
+            progress={
+              typeof uploadProgress === 'number'
+                ? uploadProgress
+                : uploadProgress?.profilePhoto ?? null
+            }
+            disabled={saving}
+          />
+        </div>
+        <div className="md:col-span-2">
+          <ImageUploader
+            label="ID Document Photo"
+            emptyLabel="Upload document photo"
+            replaceLabel="Replace document photo"
+            alt="Customer document"
+            value={values.documentPhotoUrl}
+            file={values.documentPhotoFile}
+            onChange={handleDocumentImageChange}
+            onRemove={handleRemoveDocumentImage}
+            error={errors.documentPhotoFile}
+            progress={uploadProgress?.documentPhoto ?? null}
             disabled={saving}
           />
         </div>

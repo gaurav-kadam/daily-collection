@@ -182,5 +182,10 @@ service cloud.firestore {
         );
       allow delete: if isAdmin();
     }
+
+    match /systemCounters/{counterId} {
+      allow read, create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
   }
 }

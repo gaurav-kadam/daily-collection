@@ -49,10 +49,10 @@ function Navbar({ onMenuClick }) {
           </button>
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-cyan-700">
-              Finance Operations
+              SAIBACHATGAT Finance
             </p>
             <h1 className="font-display text-lg font-semibold text-slate-950">
-              {titleMap[pathname] || 'Daily Collection'}
+              {titleMap[pathname] || 'SAIBACHATGAT Finance'}
             </h1>
           </div>
         </div>

@@ -26,10 +26,7 @@ service firebase.storage {
 
     match /customerPhotos/{customerId}/{fileName} {
       allow read: if isAdmin() || (signedIn() && customerAssignedTo(customerId, request.auth.uid));
-      allow create, update: if isAdmin()
-        && request.resource.size < 2 * 1024 * 1024
-        && request.resource.contentType.matches('image/(jpeg|png|webp)');
-      allow delete: if isAdmin();
+      allow create, update, delete: if false;
     }
   }
 }

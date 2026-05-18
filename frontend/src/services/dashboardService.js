@@ -66,9 +66,6 @@ const getPaymentTotal = (records) =>
     0,
   )
 
-const getSummaryTotal = (records, field) =>
-  records.reduce((sum, item) => sum + moneyValue(item, field), 0)
-
 const getSyncCacheKey = (currentUser, today) =>
   `finance-sync:${currentUser?.userId || 'anonymous'}:${currentUser?.role || 'user'}:${today}`
 
@@ -156,7 +153,7 @@ const getCollectorPerformance = (collections, payments) => {
     .slice(0, 6)
 }
 
-const getCollectorSummaryPerformance = (summaries, payments) => {
+const getCollectorCollectionPerformance = (collections, payments) => {
   const groups = new Map()
   const ensureGroup = (collectorId, collectorName) => {
     const key = collectorId || 'unassigned'
@@ -172,10 +169,10 @@ const getCollectorSummaryPerformance = (summaries, payments) => {
     return groups.get(key)
   }
 
-  summaries.forEach((item) => {
+  collections.forEach((item) => {
     const group = ensureGroup(item.collectorId, item.collectorName)
-    group.collectionAmount += moneyValue(item, 'totalCollection')
-    group.entries += numberValue(item.entryCount)
+    group.collectionAmount += moneyValue(item, 'amount')
+    group.entries += 1
   })
 
   payments.forEach((item) => {
@@ -244,7 +241,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
   const state = {
     customers: [],
     todayCollections: [],
-    monthSummaries: [],
+    monthCollections: [],
     loans: [],
     todayPayments: [],
     monthPayments: [],
@@ -262,9 +259,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     const overdueLoans = activeLoans
       .map((loan) => ({ ...loan, ...calculateLoanMetrics(loan) }))
       .filter((loan) => loan.overdueDays > 0)
-    const monthlyDailyCollection =
-      getSummaryTotal(state.monthSummaries, 'totalCollection') ||
-      getCollectionTotal(state.todayCollections)
+    const monthlyDailyCollection = getCollectionTotal(state.monthCollections)
     const monthlyEmiCollection = getPaymentTotal(state.monthPayments)
     const recentLoanPayments = state.recentPayments.slice(0, 6)
     const totalPenaltyAmount =
@@ -305,8 +300,8 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       recentCollections: state.todayCollections.slice(0, 6),
       recentLoanPayments,
       overdueCustomers: pendingCustomers.slice(0, 6),
-      collectorPerformance: state.monthSummaries.length
-        ? getCollectorSummaryPerformance(state.monthSummaries, state.monthPayments)
+      collectorPerformance: state.monthCollections.length
+        ? getCollectorCollectionPerformance(state.monthCollections, state.monthPayments)
         : getCollectorPerformance(state.todayCollections, state.monthPayments),
       monthlySummary: {
         dailyCollection: monthlyDailyCollection,
@@ -337,18 +332,18 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
         collection(db, COLLECTIONS.dailyCollections),
         ...scopedDateConstraints(currentUser, 'date', today),
         orderBy('createdAt', 'desc'),
-        limit(100),
+        limit(1000),
       ),
       (snapshot) => updateState('todayCollections', snapshot),
       onError,
     ),
     onSnapshot(
       query(
-        collection(db, COLLECTIONS.dailySummaries),
+        collection(db, COLLECTIONS.dailyCollections),
         ...scopedRangeConstraints(currentUser, 'date', monthStart, monthEnd),
-        limit(500),
+        limit(1000),
       ),
-      (snapshot) => updateState('monthSummaries', snapshot),
+      (snapshot) => updateState('monthCollections', snapshot),
       onError,
     ),
     onSnapshot(

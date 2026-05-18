@@ -7,6 +7,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -24,7 +25,7 @@ import {
   normalizeText,
   pageLimit,
 } from './firestoreService'
-import { uploadCustomerPhoto } from './storageService'
+import { uploadCustomerImage } from './cloudinaryService'
 
 const customersRef = collection(db, COLLECTIONS.customers)
 const usersRef = collection(db, COLLECTIONS.users)
@@ -32,6 +33,39 @@ const CACHE_TTL_MS = 30000
 const customerCache = new Map()
 const listCache = new Map()
 let metaCache = null
+const CUSTOMER_ID_PREFIX = 'SBG'
+const CUSTOMER_ID_PADDING = 4
+const CUSTOMER_COUNTER_ID = 'customerCounter'
+const DEBUG_FIRESTORE_WRITES = import.meta.env.DEV
+
+const debugFirestoreWrite = (step, details = {}) => {
+  if (!DEBUG_FIRESTORE_WRITES) return
+  console.debug('[customer:create]', step, details)
+}
+
+const debugCurrentRuleProfile = async (currentUser) => {
+  if (!DEBUG_FIRESTORE_WRITES || !auth.currentUser?.uid) return
+
+  try {
+    const profileSnapshot = await getDoc(doc(db, COLLECTIONS.users, auth.currentUser.uid))
+    debugFirestoreWrite('auth-rule-profile', {
+      authUserId: auth.currentUser.uid,
+      appUserId: currentUser?.userId || '',
+      appRole: currentUser?.role || '',
+      firestoreUserExists: profileSnapshot.exists(),
+      firestoreRole: profileSnapshot.data()?.role || '',
+      firestoreStatus: profileSnapshot.data()?.status || '',
+    })
+  } catch (error) {
+    debugFirestoreWrite('auth-rule-profile:error', {
+      authUserId: auth.currentUser.uid,
+      appUserId: currentUser?.userId || '',
+      appRole: currentUser?.role || '',
+      code: error.code,
+      message: error.message,
+    })
+  }
+}
 
 const getCachedValue = (cacheEntry) =>
   cacheEntry && Date.now() - cacheEntry.createdAt < CACHE_TTL_MS ? cacheEntry.value : null
@@ -43,6 +77,59 @@ const cacheCustomer = (customer) => {
 }
 
 const makeListCacheKey = (params) => JSON.stringify(params || {})
+
+const formatCustomerCode = (value) =>
+  `${CUSTOMER_ID_PREFIX}${String(value).padStart(CUSTOMER_ID_PADDING, '0')}`
+
+const generateCustomerReference = async () =>
+  runTransaction(db, async (transaction) => {
+    const counterReference = doc(db, COLLECTIONS.systemCounters, CUSTOMER_COUNTER_ID)
+    debugFirestoreWrite('counter:read:start', { path: counterReference.path })
+    const counterSnapshot = await transaction.get(counterReference)
+    let nextValue = Number(counterSnapshot.data()?.value || 0) + 1
+    debugFirestoreWrite('counter:read:success', {
+      exists: counterSnapshot.exists(),
+      currentValue: counterSnapshot.data()?.value || 0,
+      nextValue,
+    })
+
+    for (let attempts = 0; attempts < 25; attempts += 1) {
+      const customerId = formatCustomerCode(nextValue)
+      const customerReference = doc(customersRef, customerId)
+      debugFirestoreWrite('customer-id:check:start', {
+        customerId,
+        path: customerReference.path,
+      })
+      const customerSnapshot = await transaction.get(customerReference)
+      if (!customerSnapshot.exists()) {
+        debugFirestoreWrite('counter:update:queued', {
+          path: counterReference.path,
+          value: nextValue,
+          customerId,
+        })
+        transaction.set(
+          counterReference,
+          {
+            counterId: CUSTOMER_COUNTER_ID,
+            value: nextValue,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        )
+        debugFirestoreWrite('customer-id:selected', { customerId })
+        return customerReference
+      }
+      debugFirestoreWrite('customer-id:exists', { customerId })
+      nextValue += 1
+    }
+
+    throw new Error('Unable to generate a unique customer ID. Please try again.')
+  })
+
+const uploadProgressFor = (onUploadProgress, field) => (progress) => {
+  if (!onUploadProgress) return
+  onUploadProgress({ field, progress })
+}
 
 export const listenCustomers = (currentUser, callback, onError) => {
   const constraints =
@@ -73,7 +160,10 @@ export const createCustomer = async (payload, currentUser) => {
   const customerReference = payload.customerReference || doc(customersRef)
   const dailyAmountPaise = moneyToPaise(payload.dailyAmount)
   const dailyAmount = normalizeMoney(payload.dailyAmount)
-  const photoUrl = normalizeText(payload.photoUrl || payload.photo)
+  const profilePhotoUrl = normalizeText(
+    payload.profilePhotoUrl || payload.photoUrl || payload.photo,
+  )
+  const documentPhotoUrl = normalizeText(payload.documentPhotoUrl)
   const shopName = normalizeText(payload.shopName)
   const ownerName = normalizeText(payload.ownerName)
   const mobile = normalizeText(payload.mobile)
@@ -112,8 +202,10 @@ export const createCustomer = async (payload, currentUser) => {
     idProofType: normalizeText(payload.idProofType),
     idProofNumber: normalizeText(payload.idProofNumber),
     notes: normalizeText(payload.notes),
-    photoUrl,
-    photo: photoUrl,
+    profilePhotoUrl,
+    documentPhotoUrl,
+    photoUrl: profilePhotoUrl,
+    photo: profilePhotoUrl,
     searchKeywords: makeSearchKeywords(
       shopName,
       ownerName,
@@ -126,7 +218,32 @@ export const createCustomer = async (payload, currentUser) => {
     updatedAt: serverTimestamp(),
   }
 
-  await setDoc(customerReference, record)
+  debugFirestoreWrite('customer:set:start', {
+    path: customerReference.path,
+    customerId: record.customerId,
+    authUserId: auth.currentUser?.uid || '',
+    appUserId: currentUser?.userId || '',
+    appRole: currentUser?.role || '',
+    hasProfilePhotoUrl: Boolean(record.profilePhotoUrl),
+    hasDocumentPhotoUrl: Boolean(record.documentPhotoUrl),
+  })
+  try {
+    await setDoc(customerReference, record)
+    debugFirestoreWrite('customer:set:success', {
+      path: customerReference.path,
+      customerId: record.customerId,
+    })
+  } catch (error) {
+    debugFirestoreWrite('customer:set:error', {
+      path: customerReference.path,
+      code: error.code,
+      message: error.message,
+      authUserId: auth.currentUser?.uid || '',
+      appUserId: currentUser?.userId || '',
+      appRole: currentUser?.role || '',
+    })
+    throw error
+  }
   const customer = { id: customerReference.id, ...record }
   cacheCustomer(customer)
   listCache.clear()
@@ -250,10 +367,47 @@ export const getMeta = async () => {
 }
 
 export const create = async (payload, currentUser, { onUploadProgress } = {}) => {
-  const customerReference = doc(customersRef)
-  const photoUrl = payload.photoFile
-    ? await uploadCustomerPhoto(customerReference.id, payload.photoFile, onUploadProgress)
-    : normalizeText(payload.photoUrl || payload.photo)
+  debugFirestoreWrite('create:start', {
+    authUserId: auth.currentUser?.uid || '',
+    appUserId: currentUser?.userId || '',
+    appRole: currentUser?.role || '',
+  })
+  await debugCurrentRuleProfile(currentUser)
+  let customerReference
+  try {
+    customerReference = await generateCustomerReference()
+    debugFirestoreWrite('counter:transaction:success', {
+      customerId: customerReference.id,
+      path: customerReference.path,
+    })
+  } catch (error) {
+    debugFirestoreWrite('counter:transaction:error', {
+      code: error.code,
+      message: error.message,
+      authUserId: auth.currentUser?.uid || '',
+      appUserId: currentUser?.userId || '',
+      appRole: currentUser?.role || '',
+    })
+    throw error
+  }
+  const profileUpload = payload.profilePhotoFile
+    ? await uploadCustomerImage(
+        customerReference.id,
+        payload.profilePhotoFile,
+        'profile',
+        uploadProgressFor(onUploadProgress, 'profilePhoto'),
+      )
+    : null
+  const documentUpload = payload.documentPhotoFile
+    ? await uploadCustomerImage(
+        customerReference.id,
+        payload.documentPhotoFile,
+        'document',
+        uploadProgressFor(onUploadProgress, 'documentPhoto'),
+      )
+    : null
+  const profilePhotoUrl = profileUpload?.url || normalizeText(payload.profilePhotoUrl || payload.photoUrl || payload.photo)
+  const documentPhotoUrl = documentUpload?.url || normalizeText(payload.documentPhotoUrl)
   const selectedCollector = payload.assignedCollectorId
     ? (await getDoc(doc(db, COLLECTIONS.users, payload.assignedCollectorId))).data()
     : null
@@ -261,8 +415,10 @@ export const create = async (payload, currentUser, { onUploadProgress } = {}) =>
     {
       ...payload,
       customerReference,
-      photoUrl,
-      photo: photoUrl,
+      profilePhotoUrl,
+      documentPhotoUrl,
+      photoUrl: profilePhotoUrl,
+      photo: profilePhotoUrl,
       assignedCollectorName:
         payload.assignedCollectorName || selectedCollector?.fullName || '',
     },
@@ -309,16 +465,42 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
   }
 
   if (payload.removePhoto) {
+    updates.profilePhotoUrl = ''
     updates.photoUrl = ''
     updates.photo = ''
-  } else if (payload.photoFile) {
-    const photoUrl = await uploadCustomerPhoto(customerId, payload.photoFile, onUploadProgress)
-    updates.photoUrl = photoUrl
-    updates.photo = photoUrl
-  } else if (payload.photoUrl !== undefined || payload.photo !== undefined) {
-    const photoUrl = normalizeText(payload.photoUrl || payload.photo)
-    updates.photoUrl = photoUrl
-    updates.photo = photoUrl
+  } else if (payload.profilePhotoFile) {
+    const upload = await uploadCustomerImage(
+      customerId,
+      payload.profilePhotoFile,
+      'profile',
+      uploadProgressFor(onUploadProgress, 'profilePhoto'),
+    )
+    updates.profilePhotoUrl = upload.url
+    updates.photoUrl = upload.url
+    updates.photo = upload.url
+  } else if (
+    payload.profilePhotoUrl !== undefined ||
+    payload.photoUrl !== undefined ||
+    payload.photo !== undefined
+  ) {
+    const profilePhotoUrl = normalizeText(payload.profilePhotoUrl || payload.photoUrl || payload.photo)
+    updates.profilePhotoUrl = profilePhotoUrl
+    updates.photoUrl = profilePhotoUrl
+    updates.photo = profilePhotoUrl
+  }
+
+  if (payload.removeDocumentPhoto) {
+    updates.documentPhotoUrl = ''
+  } else if (payload.documentPhotoFile) {
+    const upload = await uploadCustomerImage(
+      customerId,
+      payload.documentPhotoFile,
+      'document',
+      uploadProgressFor(onUploadProgress, 'documentPhoto'),
+    )
+    updates.documentPhotoUrl = upload.url
+  } else if (payload.documentPhotoUrl !== undefined) {
+    updates.documentPhotoUrl = normalizeText(payload.documentPhotoUrl)
   }
 
   if (updates.assignedCollectorId && !updates.assignedCollectorName) {

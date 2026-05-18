@@ -37,11 +37,20 @@ function AddCustomerPage() {
 
   const handleSubmit = async (payload) => {
     setSaving(true)
-    setUploadProgress(payload.photoFile ? 0 : null)
+    setUploadProgress(
+      payload.profilePhotoFile || payload.documentPhotoFile
+        ? {
+            profilePhoto: payload.profilePhotoFile ? 0 : null,
+            documentPhoto: payload.documentPhotoFile ? 0 : null,
+          }
+        : null,
+    )
     setError('')
     try {
       const created = await customerService.create(payload, user, {
-        onUploadProgress: setUploadProgress,
+        onUploadProgress: ({ field, progress }) => {
+          setUploadProgress((previous) => ({ ...(previous || {}), [field]: progress }))
+        },
       })
       navigate(`/customers/${created.id || created.customerId}`)
     } catch (exception) {

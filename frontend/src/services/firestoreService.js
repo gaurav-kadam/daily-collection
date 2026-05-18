@@ -7,6 +7,7 @@ export const COLLECTIONS = {
   notifications: 'notifications',
   dailySummaries: 'dailySummaries',
   penalties: 'penalties',
+  systemCounters: 'systemCounters',
 }
 
 export const USER_ROLES = {

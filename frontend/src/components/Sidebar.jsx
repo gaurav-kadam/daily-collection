@@ -63,8 +63,8 @@ function Sidebar({ open, onClose }) {
       >
         <div className="flex h-16 items-center justify-between border-b border-slate-800 px-5">
           <div>
-            <p className="font-display text-lg font-bold text-white">Daily Collection</p>
-            <p className="text-xs text-slate-400">Finance operations</p>
+            <p className="font-display text-lg font-bold text-white">SAIBACHATGAT</p>
+            <p className="text-xs text-slate-400">Finance</p>
           </div>
           <button
             type="button"

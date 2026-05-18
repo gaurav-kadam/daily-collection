@@ -1,5 +1,6 @@
 import { FiCreditCard, FiImage, FiMapPin, FiPhone, FiUser } from 'react-icons/fi'
 import TableComponent from '../TableComponent'
+import { getOptimizedImageUrl } from '../../services/cloudinaryService'
 import { formatDate } from '../../utils/date'
 import { formatCurrency, formatPhone } from '../../utils/format'
 import StatusBadge from './StatusBadge'
@@ -70,7 +71,15 @@ function CustomerProfile({
   emiPayments = [],
   sectionStatus = {},
 }) {
-  const photoUrl = customer.photoUrl || customer.photo
+  const profilePhotoUrl = getOptimizedImageUrl(
+    customer.profilePhotoUrl || customer.photoUrl || customer.photo,
+    { width: 192, height: 192, crop: 'fill' },
+  )
+  const documentPhotoUrl = getOptimizedImageUrl(customer.documentPhotoUrl, {
+    width: 480,
+    height: 360,
+    crop: 'fit',
+  })
   const activeLoans = loans.filter((loan) => (loan.loanStatus || loan.status) === 'active')
   const completedLoans = loans.filter((loan) => (loan.loanStatus || loan.status) === 'completed')
   const outstandingLoanAmount = loans.reduce(
@@ -187,9 +196,9 @@ function CustomerProfile({
         <div className="card p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="flex h-24 w-24 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-slate-100">
-              {photoUrl ? (
+              {profilePhotoUrl ? (
                 <img
-                  src={photoUrl}
+                  src={profilePhotoUrl}
                   alt={customer.shopName}
                   className="h-full w-full object-cover"
                   loading="lazy"
@@ -259,8 +268,13 @@ function CustomerProfile({
         <SectionHeader>Document Details</SectionHeader>
         <div className="grid gap-5 lg:grid-cols-[180px_1fr]">
           <div className="flex h-36 w-36 items-center justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
-            {photoUrl ? (
-              <img src={photoUrl} alt={customer.shopName} className="h-full w-full object-cover" loading="lazy" />
+            {documentPhotoUrl ? (
+              <img
+                src={documentPhotoUrl}
+                alt={`${customer.shopName} document`}
+                className="h-full w-full object-cover"
+                loading="lazy"
+              />
             ) : (
               <FiImage className="text-3xl text-slate-400" />
             )}
@@ -268,7 +282,7 @@ function CustomerProfile({
           <dl className="grid gap-4 md:grid-cols-2">
             <DetailItem label="ID Proof Type" value={customer.idProofType} />
             <DetailItem label="ID Proof Number" value={customer.idProofNumber} />
-            <DetailItem label="Uploaded Photo" value={photoUrl ? 'Available' : 'Not uploaded'} />
+            <DetailItem label="Document Photo" value={documentPhotoUrl ? 'Available' : 'Not uploaded'} />
           </dl>
         </div>
       </section>
