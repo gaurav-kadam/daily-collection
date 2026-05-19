@@ -15,6 +15,7 @@ import {
 } from 'firebase/firestore'
 import { auth, db } from '../firebase/firebase'
 import {
+  buildModuleFlags,
   COLLECTIONS,
   USER_ROLES,
   docsWithIds,
@@ -42,6 +43,11 @@ const debugFirestoreWrite = (step, details = {}) => {
   if (!DEBUG_FIRESTORE_WRITES) return
   console.debug('[customer:create]', step, details)
 }
+
+const withModuleFlags = (customer = {}) => ({
+  ...customer,
+  moduleFlags: buildModuleFlags(customer.moduleFlags),
+})
 
 const debugCurrentRuleProfile = async (currentUser) => {
   if (!DEBUG_FIRESTORE_WRITES || !auth.currentUser?.uid) return
@@ -71,9 +77,10 @@ const getCachedValue = (cacheEntry) =>
   cacheEntry && Date.now() - cacheEntry.createdAt < CACHE_TTL_MS ? cacheEntry.value : null
 
 const cacheCustomer = (customer) => {
-  const cacheEntry = { value: customer, createdAt: Date.now() }
-  if (customer.id) customerCache.set(customer.id, cacheEntry)
-  if (customer.customerId) customerCache.set(customer.customerId, cacheEntry)
+  const normalized = withModuleFlags(customer)
+  const cacheEntry = { value: normalized, createdAt: Date.now() }
+  if (normalized.id) customerCache.set(normalized.id, cacheEntry)
+  if (normalized.customerId) customerCache.set(normalized.customerId, cacheEntry)
 }
 
 const makeListCacheKey = (params) => JSON.stringify(params || {})
@@ -139,7 +146,7 @@ export const listenCustomers = (currentUser, callback, onError) => {
 
   return onSnapshot(
     query(customersRef, ...constraints),
-    (snapshot) => callback(docsWithIds(snapshot)),
+    (snapshot) => callback(docsWithIds(snapshot).map(withModuleFlags)),
     onError,
   )
 }
@@ -169,9 +176,13 @@ export const createCustomer = async (payload, currentUser) => {
   const mobile = normalizeText(payload.mobile)
   const alternateMobile = normalizeText(payload.alternateMobile)
   const area = normalizeText(payload.area)
+  const fullName = normalizeText(payload.fullName || ownerName)
+  const idType = normalizeText(payload.idProofType || payload.kyc?.idType)
+  const idNumber = normalizeText(payload.idProofNumber || payload.kyc?.idNumber)
 
   const record = {
     customerId: customerReference.id,
+    fullName,
     shopName,
     shopNameLower: normalizeSearchText(shopName),
     ownerName,
@@ -183,6 +194,12 @@ export const createCustomer = async (payload, currentUser) => {
     area,
     areaLower: normalizeSearchText(area),
     address: normalizeText(payload.address),
+    kyc: {
+      idType,
+      idNumber,
+    },
+    profilePhoto: profilePhotoUrl,
+    documentPhoto: documentPhotoUrl,
     dailyAmount,
     dailyAmountPaise,
     totalSavings: 0,
@@ -206,7 +223,9 @@ export const createCustomer = async (payload, currentUser) => {
     documentPhotoUrl,
     photoUrl: profilePhotoUrl,
     photo: profilePhotoUrl,
+    moduleFlags: buildModuleFlags(payload.moduleFlags),
     searchKeywords: makeSearchKeywords(
+      fullName,
       shopName,
       ownerName,
       mobile,
@@ -244,7 +263,7 @@ export const createCustomer = async (payload, currentUser) => {
     })
     throw error
   }
-  const customer = { id: customerReference.id, ...record }
+  const customer = withModuleFlags({ id: customerReference.id, ...record })
   cacheCustomer(customer)
   listCache.clear()
   return customer
@@ -269,7 +288,7 @@ export const getAll = async ({
   constraints.push(limit(pageLimit(pageSize)))
 
   const snapshot = await getDocs(query(customersRef, ...constraints))
-  const results = docsWithIds(snapshot)
+  const results = docsWithIds(snapshot).map(withModuleFlags)
   results.forEach(cacheCustomer)
   const response = {
     results,
@@ -303,6 +322,7 @@ export const searchCustomers = async ({
       if (tokens.length <= 1) return true
       const searchableText = normalizeSearchText(
         [
+          customer.fullName,
           customer.shopName,
           customer.ownerName,
           customer.mobile,
@@ -312,6 +332,7 @@ export const searchCustomers = async ({
       )
       return tokens.every((token) => searchableText.includes(token))
     })
+    .map(withModuleFlags)
     .sort((first, second) =>
       String(first.shopName || '').localeCompare(String(second.shopName || '')),
     )
@@ -329,7 +350,13 @@ export const getById = async (customerId) => {
 
   const snapshot = await getDoc(doc(db, COLLECTIONS.customers, customerId))
   if (snapshot.exists()) {
-    const customer = { id: snapshot.id, ...snapshot.data() }
+    const customer = withModuleFlags({ id: snapshot.id, ...snapshot.data() })
+    if (!snapshot.data()?.moduleFlags) {
+      updateDoc(doc(db, COLLECTIONS.customers, snapshot.id), {
+        moduleFlags: customer.moduleFlags,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {})
+    }
     cacheCustomer(customer)
     return customer
   }
@@ -340,7 +367,13 @@ export const getById = async (customerId) => {
   if (fieldSnapshot.empty) throw new Error('Customer not found.')
 
   const match = fieldSnapshot.docs[0]
-  const customer = { id: match.id, ...match.data() }
+  const customer = withModuleFlags({ id: match.id, ...match.data() })
+  if (!match.data()?.moduleFlags) {
+    updateDoc(doc(db, COLLECTIONS.customers, match.id), {
+      moduleFlags: customer.moduleFlags,
+      updatedAt: serverTimestamp(),
+    }).catch(() => {})
+  }
   cacheCustomer(customer)
   return customer
 }
@@ -434,6 +467,7 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
   const alternateMobile = normalizeText(payload.alternateMobile)
   const area = normalizeText(payload.area)
   const updates = {
+    fullName: normalizeText(payload.fullName || ownerName),
     shopName,
     shopNameLower: normalizeSearchText(shopName),
     ownerName,
@@ -445,6 +479,10 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
     area,
     areaLower: normalizeSearchText(area),
     address: normalizeText(payload.address),
+    kyc: {
+      idType: normalizeText(payload.idProofType || payload.kyc?.idType),
+      idNumber: normalizeText(payload.idProofNumber || payload.kyc?.idNumber),
+    },
     dailyAmount,
     dailyAmountPaise: moneyToPaise(payload.dailyAmount),
     assignedCollectorId: normalizeText(payload.assignedCollectorId),
@@ -455,6 +493,7 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
     idProofNumber: normalizeText(payload.idProofNumber),
     notes: normalizeText(payload.notes),
     searchKeywords: makeSearchKeywords(
+      normalizeText(payload.fullName || ownerName),
       shopName,
       ownerName,
       mobile,
@@ -465,6 +504,7 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
   }
 
   if (payload.removePhoto) {
+    updates.profilePhoto = ''
     updates.profilePhotoUrl = ''
     updates.photoUrl = ''
     updates.photo = ''
@@ -475,6 +515,7 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
       'profile',
       uploadProgressFor(onUploadProgress, 'profilePhoto'),
     )
+    updates.profilePhoto = upload.url
     updates.profilePhotoUrl = upload.url
     updates.photoUrl = upload.url
     updates.photo = upload.url
@@ -484,12 +525,14 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
     payload.photo !== undefined
   ) {
     const profilePhotoUrl = normalizeText(payload.profilePhotoUrl || payload.photoUrl || payload.photo)
+    updates.profilePhoto = profilePhotoUrl
     updates.profilePhotoUrl = profilePhotoUrl
     updates.photoUrl = profilePhotoUrl
     updates.photo = profilePhotoUrl
   }
 
   if (payload.removeDocumentPhoto) {
+    updates.documentPhoto = ''
     updates.documentPhotoUrl = ''
   } else if (payload.documentPhotoFile) {
     const upload = await uploadCustomerImage(
@@ -498,8 +541,10 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
       'document',
       uploadProgressFor(onUploadProgress, 'documentPhoto'),
     )
+    updates.documentPhoto = upload.url
     updates.documentPhotoUrl = upload.url
   } else if (payload.documentPhotoUrl !== undefined) {
+    updates.documentPhoto = normalizeText(payload.documentPhotoUrl)
     updates.documentPhotoUrl = normalizeText(payload.documentPhotoUrl)
   }
 

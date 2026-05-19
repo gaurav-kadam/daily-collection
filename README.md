@@ -42,6 +42,12 @@ frontend/src/
 
 - `users`
 - `customers`
+- `bachatAccounts`
+- `bachatCollections`
+- `bachatPenalties`
+- `bachatClosures`
+- `bachatSummary`
+- `customerFinancials`
 - `dailyCollections`
 - `loans`
 - `emiPayments`

@@ -2,18 +2,35 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
+    function isAuthenticated() {
       return request.auth != null;
+    }
+
+    function signedIn() {
+      return isAuthenticated();
     }
 
     function hasUserDoc(uid) {
       return exists(/databases/$(database)/documents/users/$(uid));
     }
 
+    function requesterUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasActiveUserStatus() {
+      return hasUserDoc(request.auth.uid)
+        && (
+          !requesterUser().keys().hasAny(['status'])
+          || requesterUser().status == 'active'
+        );
+    }
+
     function hasRole(role) {
-      return signedIn()
+      return isAuthenticated()
         && hasUserDoc(request.auth.uid)
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+        && hasActiveUserStatus()
+        && requesterUser().role == role;
     }
 
     function isAdmin() {
@@ -32,6 +49,10 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/customers/$(customerId)).data.assignedCollectorId == uid;
     }
 
+    function canAccessCustomer(customerId) {
+      return isAdmin() || (isCollector() && customerAssignedTo(customerId, request.auth.uid));
+    }
+
     function customerBalanceOnlyChanged() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
         'totalSavings',
@@ -45,8 +66,27 @@ service cloud.firestore {
         'lastCollectionDate',
         'lastDailySyncDate',
         'lastPenaltyUpdated',
+        'moduleFlags',
         'updatedAt'
       ]);
+    }
+
+    function hasValidModuleFlags(moduleFlags) {
+      return moduleFlags is map
+        && moduleFlags.keys().hasOnly([
+          'bachat',
+          'saving',
+          'loan',
+          'bishi',
+          'fd',
+          'deposit'
+        ])
+        && moduleFlags.bachat is bool
+        && moduleFlags.saving is bool
+        && moduleFlags.loan is bool
+        && moduleFlags.bishi is bool
+        && moduleFlags.fd is bool
+        && moduleFlags.deposit is bool;
     }
 
     function loanOperationalOnlyChanged() {
@@ -68,6 +108,41 @@ service cloud.firestore {
       ]);
     }
 
+    function userSelfEditableFieldsOnly() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'fullName',
+        'mobile',
+        'profileImage',
+        'email',
+        'lastLogin',
+        'updatedAt',
+        'permissions',
+        'role',
+        'status'
+      ]);
+    }
+
+    function selfRoleStatusBackfillOnly() {
+      return (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
+          || (
+            request.resource.data.role == 'collector'
+            && !resource.data.keys().hasAny(['role'])
+          )
+        )
+        && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status'])
+          || (
+            request.resource.data.status == 'active'
+            && !resource.data.keys().hasAny(['status'])
+          )
+        )
+        && (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['permissions'])
+          || !resource.data.keys().hasAny(['permissions'])
+        );
+    }
+
     match /users/{userId} {
       allow read: if isAdmin() || ownsUserDoc(userId);
       allow create: if isAdmin()
@@ -79,14 +154,8 @@ service cloud.firestore {
       allow update: if isAdmin()
         || (
           ownsUserDoc(userId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'fullName',
-            'mobile',
-            'profileImage',
-            'email',
-            'lastLogin',
-            'updatedAt'
-          ])
+          && userSelfEditableFieldsOnly()
+          && selfRoleStatusBackfillOnly()
         );
       allow delete: if isAdmin();
     }
@@ -100,6 +169,10 @@ service cloud.firestore {
           isCollector()
           && resource.data.assignedCollectorId == request.auth.uid
           && customerBalanceOnlyChanged()
+          && (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['moduleFlags'])
+            || hasValidModuleFlags(request.resource.data.moduleFlags)
+          )
         );
       allow delete: if isAdmin();
     }
@@ -119,6 +192,85 @@ service cloud.firestore {
           )
         );
       allow update, delete: if isAdmin();
+    }
+
+    match /bachatAccounts/{customerId} {
+      allow read: if canAccessCustomer(customerId);
+      allow create: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(customerId, request.auth.uid)
+          && request.resource.data.collectorId == request.auth.uid
+        );
+      allow update: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(customerId, request.auth.uid)
+          && request.resource.data.collectorId == request.auth.uid
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /bachatCollections/{txId} {
+      allow read: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(resource.data.customerId, request.auth.uid)
+        );
+      allow create: if isAdmin()
+        || (
+          isCollector()
+          && request.resource.data.collectorId == request.auth.uid
+          && customerAssignedTo(request.resource.data.customerId, request.auth.uid)
+        );
+      allow update, delete: if isAdmin();
+    }
+
+    match /bachatPenalties/{penaltyId} {
+      allow read: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(resource.data.customerId, request.auth.uid)
+        );
+      allow create, update: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(request.resource.data.customerId, request.auth.uid)
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /bachatClosures/{closureId} {
+      allow read: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(resource.data.customerId, request.auth.uid)
+        );
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /bachatSummary/{summaryId} {
+      allow read: if isAdmin()
+        || (
+          isCollector()
+          && summaryId == 'main'
+        );
+      allow create, update: if isAdmin()
+        || (
+          isCollector()
+          && summaryId == 'main'
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /customerFinancials/{customerId} {
+      allow read: if canAccessCustomer(customerId);
+      allow create, update: if isAdmin()
+        || (
+          isCollector()
+          && customerAssignedTo(customerId, request.auth.uid)
+        );
+      allow delete: if isAdmin();
     }
 
     match /loans/{loanId} {
@@ -181,6 +333,11 @@ service cloud.firestore {
           && request.resource.data.type in ['daily', 'emi']
         );
       allow delete: if isAdmin();
+    }
+
+    match /financeEntries/{entryId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
     match /systemCounters/{counterId} {

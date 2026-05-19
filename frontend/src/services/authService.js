@@ -42,6 +42,7 @@ const normalizeAuthUser = (firebaseUser, profile = {}) => ({
   mobile: profile.mobile || '',
   role: profile.role || USER_ROLES.collector,
   status: profile.status || 'active',
+  permissions: profile.permissions || {},
   profileImage: profile.profileImage || '',
   createdAt: profile.createdAt || null,
 })
@@ -87,6 +88,16 @@ export const ensureUserProfile = async (firebaseUser) => {
 
   const existingProfile = await getUserProfile(firebaseUser.uid)
   if (existingProfile) {
+    const backfill = {}
+    if (!existingProfile.role) backfill.role = USER_ROLES.collector
+    if (!existingProfile.status) backfill.status = 'active'
+    if (!existingProfile.permissions) backfill.permissions = {}
+    if (Object.keys(backfill).length) {
+      updateDoc(userRef(firebaseUser.uid), {
+        ...backfill,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {})
+    }
     const normalized = normalizeAuthUser(firebaseUser, existingProfile)
     writeCachedProfile(firebaseUser.uid, existingProfile)
     return normalized
@@ -99,6 +110,7 @@ export const ensureUserProfile = async (firebaseUser) => {
     role: USER_ROLES.collector,
     mobile: '',
     status: 'active',
+    permissions: {},
     profileImage: '',
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -154,8 +166,9 @@ export const registerUser = async ({
   password,
   mobile = '',
   role = USER_ROLES.collector,
-  status = 'active',
-  profileImage = '',
+    status = 'active',
+    permissions = {},
+    profileImage = '',
 }) => {
   const normalizedRole = Object.values(USER_ROLES).includes(role)
     ? role
@@ -180,6 +193,7 @@ export const registerUser = async ({
       mobile,
       role: normalizedRole,
       status,
+      permissions: permissions && typeof permissions === 'object' ? permissions : {},
       profileImage,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

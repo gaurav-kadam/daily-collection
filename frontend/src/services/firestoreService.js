@@ -2,11 +2,18 @@ export const COLLECTIONS = {
   users: 'users',
   customers: 'customers',
   dailyCollections: 'dailyCollections',
+  bachatAccounts: 'bachatAccounts',
+  bachatCollections: 'bachatCollections',
+  bachatPenalties: 'bachatPenalties',
+  bachatClosures: 'bachatClosures',
+  bachatSummary: 'bachatSummary',
+  customerFinancials: 'customerFinancials',
   loans: 'loans',
   emiPayments: 'emiPayments',
   notifications: 'notifications',
   dailySummaries: 'dailySummaries',
   penalties: 'penalties',
+  financeEntries: 'financeEntries',
   systemCounters: 'systemCounters',
 }
 
@@ -14,6 +21,21 @@ export const USER_ROLES = {
   admin: 'admin',
   collector: 'collector',
 }
+
+export const MODULE_FLAGS_TEMPLATE = Object.freeze({
+  bachat: false,
+  saving: false,
+  loan: false,
+  bishi: false,
+  fd: false,
+  deposit: false,
+})
+
+export const buildModuleFlags = (moduleFlags = {}, overrides = {}) => ({
+  ...MODULE_FLAGS_TEMPLATE,
+  ...(moduleFlags && typeof moduleFlags === 'object' ? moduleFlags : {}),
+  ...(overrides && typeof overrides === 'object' ? overrides : {}),
+})
 
 export const PAYMENT_METHODS = ['cash', 'online']
 export const CUSTOMER_STATUSES = ['active', 'inactive', 'blocked']

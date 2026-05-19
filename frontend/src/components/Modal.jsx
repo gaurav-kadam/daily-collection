@@ -1,11 +1,11 @@
 import { IoClose } from 'react-icons/io5'
 
-function Modal({ isOpen, title, onClose, children }) {
+function Modal({ isOpen, title, onClose, children, sizeClass = 'max-w-2xl', panelClass = '' }) {
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-      <div className="card w-full max-w-2xl p-5 md:p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
+      <div className={`card w-full ${sizeClass} p-5 md:p-6 ${panelClass}`}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="section-title">{title}</h2>
           <button

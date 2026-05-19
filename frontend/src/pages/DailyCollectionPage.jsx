@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import { FiCheckCircle, FiPlus } from 'react-icons/fi'
 import Loader from '../components/Loader'
 import useAuth from '../hooks/useAuth'
+import { getActiveBachatAccounts } from '../services/bachatService'
 import {
   createDailyCollection,
   listenDailyCollections,
@@ -23,6 +24,7 @@ const emptyForm = {
 function DailyCollectionPage() {
   const { user } = useAuth()
   const [customers, setCustomers] = useState([])
+  const [accounts, setAccounts] = useState([])
   const [collections, setCollections] = useState([])
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(true)
@@ -32,10 +34,14 @@ function DailyCollectionPage() {
     if (!user) return undefined
 
     let isMounted = true
-    customerService
-      .getAll({ currentUser: user, status: 'active', pageSize: 200 })
-      .then((data) => {
-        if (isMounted) setCustomers(data.results || [])
+    Promise.all([
+      customerService.getAll({ currentUser: user, status: 'active', pageSize: 300 }),
+      getActiveBachatAccounts({ currentUser: user, pageSize: 500 }),
+    ])
+      .then(([customerData, accountData]) => {
+        if (!isMounted) return
+        setCustomers(customerData.results || [])
+        setAccounts(accountData.results || [])
       })
       .catch((error) => toast.error(error.message))
 
@@ -55,18 +61,44 @@ function DailyCollectionPage() {
     }
   }, [form.date, user])
 
-  const selectedCustomer = useMemo(
-    () => customers.find((customer) => (customer.customerId || customer.id) === form.customerId),
-    [customers, form.customerId],
+  const customerMap = useMemo(
+    () => new Map(customers.map((customer) => [customer.customerId || customer.id, customer])),
+    [customers],
   )
+
+  const selectedAccount = useMemo(
+    () => accounts.find((account) => account.customerId === form.customerId),
+    [accounts, form.customerId],
+  )
+
+  const selectedCustomer = useMemo(() => {
+    if (!selectedAccount) return null
+    const profile = customerMap.get(selectedAccount.customerId) || {}
+    return {
+      ...profile,
+      ...selectedAccount,
+      customerId: selectedAccount.customerId,
+    }
+  }, [customerMap, selectedAccount])
 
   const collectedCustomerIds = useMemo(
     () => new Set(collections.map((item) => item.customerId)),
     [collections],
   )
 
-  const pendingCustomers = customers.filter(
-    (customer) => !collectedCustomerIds.has(customer.customerId || customer.id),
+  const pendingCustomers = useMemo(
+    () =>
+      accounts
+        .filter((account) => !collectedCustomerIds.has(account.customerId))
+        .map((account) => {
+          const profile = customerMap.get(account.customerId) || {}
+          return {
+            ...profile,
+            ...account,
+            customerId: account.customerId,
+          }
+        }),
+    [accounts, collectedCustomerIds, customerMap],
   )
 
   const updateForm = (event) => {
@@ -75,13 +107,13 @@ function DailyCollectionPage() {
   }
 
   const handleCustomerChange = (event) => {
-    const customer = customers.find(
-      (item) => (item.customerId || item.id) === event.target.value,
+    const account = accounts.find(
+      (item) => item.customerId === event.target.value,
     )
     setForm((previous) => ({
       ...previous,
       customerId: event.target.value,
-      amountCollected: customer?.dailyAmount || '',
+      amountCollected: account?.dailyAmount || '',
     }))
   }
 
@@ -157,7 +189,7 @@ function DailyCollectionPage() {
                 <option value="">Select customer</option>
                 {pendingCustomers.map((customer) => (
                   <option key={customer.customerId || customer.id} value={customer.customerId || customer.id}>
-                    {customer.shopName} - {customer.ownerName}
+                    {customer.fullName || customer.ownerName || customer.shopName} - {customer.customerId || customer.id}
                   </option>
                 ))}
               </select>
@@ -219,8 +251,8 @@ function DailyCollectionPage() {
                     <strong>{formatCurrency(selectedCustomer.dailyAmount)}</strong>
                   </p>
                   <p>
-                    <span className="text-slate-500">Savings:</span>{' '}
-                    <strong>{formatCurrency(selectedCustomer.totalSavings)}</strong>
+                    <span className="text-slate-500">Collected:</span>{' '}
+                    <strong>{formatCurrency(selectedCustomer.totalCollected)}</strong>
                   </p>
                   <p>
                     <span className="text-slate-500">Pending:</span>{' '}
@@ -245,8 +277,10 @@ function DailyCollectionPage() {
                 key={customer.customerId || customer.id}
                 className="rounded-lg border border-slate-200 p-3"
               >
-                <p className="font-semibold text-slate-900">{customer.shopName}</p>
-                <p className="text-sm text-slate-500">{customer.ownerName}</p>
+                <p className="font-semibold text-slate-900">
+                  {customer.fullName || customer.ownerName || customer.shopName}
+                </p>
+                <p className="text-sm text-slate-500">{customer.customerId || customer.id}</p>
                 <p className="mt-2 text-sm font-semibold text-slate-900">
                   {formatCurrency(customer.dailyAmount)}
                 </p>

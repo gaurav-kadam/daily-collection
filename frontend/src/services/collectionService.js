@@ -12,7 +12,7 @@ import {
   serverTimestamp,
   where,
 } from 'firebase/firestore'
-import { db } from '../firebase/firebase'
+import { auth, db } from '../firebase/firebase'
 import {
   COLLECTIONS,
   FINANCE_RULES,
@@ -28,6 +28,7 @@ import {
   paiseToMoney,
   todayKey,
 } from './firestoreService'
+import { applyBachatCollectionV2InTransaction } from './bachatService'
 
 const collectionsRef = collection(db, COLLECTIONS.dailyCollections)
 const customersRef = collection(db, COLLECTIONS.customers)
@@ -45,6 +46,33 @@ const mapCollectionRecord = (record) => ({
 })
 
 const uniqueIds = (ids = []) => [...new Set(ids.filter(Boolean).map(String))]
+const DEBUG_COLLECTION_PERMISSION = import.meta.env.DEV
+
+const isPermissionDenied = (error) =>
+  error?.code === 'permission-denied' ||
+  String(error?.message || '').toLowerCase().includes('insufficient permissions')
+
+const debugCollectionPermission = ({
+  operation,
+  collectionName,
+  failedPath = '',
+  currentUser,
+  transactionPaths = [],
+  error,
+}) => {
+  if (!DEBUG_COLLECTION_PERMISSION || !error || !isPermissionDenied(error)) return
+
+  console.error('[collections:permission-denied]', {
+    operation,
+    authUid: auth.currentUser?.uid || '',
+    resolvedRole: currentUser?.role || '',
+    requestedCollection: collectionName,
+    failedTransactionPath: failedPath,
+    transactionPaths,
+    code: error.code || '',
+    message: error.message || '',
+  })
+}
 
 const sortCollectionsDesc = (records) =>
   [...records].sort((first, second) =>
@@ -159,145 +187,181 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
         ? 'partial'
         : 'pending'
 
-  await runTransaction(db, async (transaction) => {
-    const existingCollection = await transaction.get(collectionReference)
-    if (existingCollection.exists()) {
-      throw new Error('Collection for this customer already exists for selected date.')
-    }
+  try {
+    await runTransaction(db, async (transaction) => {
+      const existingCollection = await transaction.get(collectionReference)
+      if (existingCollection.exists()) {
+        throw new Error('Collection for this customer already exists for selected date.')
+      }
 
-    const customerSnapshot = await transaction.get(customerReference)
-    if (!customerSnapshot.exists()) {
-      throw new Error('Customer record was not found.')
-    }
+      const customerSnapshot = await transaction.get(customerReference)
+      if (!customerSnapshot.exists()) {
+        throw new Error('Customer record was not found.')
+      }
 
-    const customerData = customerSnapshot.data()
-    const currentPendingPaise = moneyToPaise(moneyValue(customerData, 'pendingAmount'))
-    const nextPendingAmountPaise = Math.max(
-      currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
-      0,
-    )
-    const nextPendingAmount = paiseToMoney(nextPendingAmountPaise)
-    const nextPendingDays =
-      nextPendingAmountPaise === 0
-        ? 0
-        : Math.max(
-            numberValue(customerData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
-            0,
-          )
-    const dailyPenaltyPaise = moneyToPaise(nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay)
+      const customerData = customerSnapshot.data()
+      const currentPendingPaise = moneyToPaise(moneyValue(customerData, 'pendingAmount'))
+      const nextPendingAmountPaise = Math.max(
+        currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
+        0,
+      )
+      const nextPendingAmount = paiseToMoney(nextPendingAmountPaise)
+      const nextPendingDays =
+        nextPendingAmountPaise === 0
+          ? 0
+          : Math.max(
+              numberValue(customerData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
+              0,
+            )
+      const dailyPenaltyPaise = moneyToPaise(nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay)
 
-    const collectorId =
-      currentUser.role === USER_ROLES.admin
-        ? customerData.assignedCollectorId || currentUser.userId
-        : currentUser.userId
-    const collectorName =
-      customerData.assignedCollectorName ||
-      currentUser.fullName ||
-      currentUser.email ||
-      ''
-    const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise
-    const totalReceived = paiseToMoney(totalReceivedPaise)
+      const collectorId =
+        currentUser.role === USER_ROLES.admin
+          ? customerData.assignedCollectorId || currentUser.userId
+          : currentUser.userId
+      const collectorName =
+        customerData.assignedCollectorName ||
+        currentUser.fullName ||
+        currentUser.email ||
+        ''
+      const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise
+      const totalReceived = paiseToMoney(totalReceivedPaise)
 
-    const record = {
-      collectionId,
-      customerId: customerSnapshot.id,
-      customerName: customerData.ownerName || '',
-      shopName: customerData.shopName || '',
-      collectorId,
-      collectorName,
-      expectedAmount,
-      expectedAmountPaise,
-      amountCollected,
-      amountCollectedPaise,
-      amount: totalReceived,
-      amountPaise: totalReceivedPaise,
-      pendingCreated,
-      pendingCreatedPaise,
-      pendingRecovered,
-      pendingRecoveredPaise,
-      paymentMethod: payload.paymentMethod || 'cash',
-      date,
-      status,
-      overdueDays: daysBetween(date, todayKey()),
-      penaltyAmount: 0,
-      penaltyAmountPaise: 0,
-      remarks: normalizeText(payload.remarks),
-      createdById: currentUser.userId,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    }
-
-    const summaryReference = doc(
-      db,
-      COLLECTIONS.dailySummaries,
-      dailySummaryDocumentId(date, collectorId),
-    )
-    const penaltyReference = doc(
-      db,
-      COLLECTIONS.penalties,
-      `daily_${customerSnapshot.id}`,
-    )
-
-    transaction.set(collectionReference, record)
-    transaction.update(customerReference, {
-      totalSavings: increment(totalReceived),
-      totalSavingsPaise: increment(totalReceivedPaise),
-      pendingAmount: nextPendingAmount,
-      pendingAmountPaise: nextPendingAmountPaise,
-      pendingDays: nextPendingDays,
-      overdueDays: nextPendingDays,
-      penaltyAmount: paiseToMoney(dailyPenaltyPaise),
-      penaltyAmountPaise: dailyPenaltyPaise,
-      lastCollectionDate: date,
-      lastDailySyncDate: date,
-      lastPenaltyUpdated: todayKey(),
-      updatedAt: serverTimestamp(),
-    })
-    transaction.set(
-      summaryReference,
-      {
-        summaryId: summaryReference.id,
-        date,
-        collectorId,
-        collectorName,
-        entryCount: increment(1),
-        paidCount: increment(status === 'paid' ? 1 : 0),
-        partialCount: increment(status === 'partial' ? 1 : 0),
-        pendingCount: increment(status === 'pending' ? 1 : 0),
-        expectedAmount: increment(expectedAmount),
-        expectedAmountPaise: increment(expectedAmountPaise),
-        totalCollection: increment(totalReceived),
-        totalCollectionPaise: increment(totalReceivedPaise),
-        pendingCreated: increment(pendingCreated),
-        pendingCreatedPaise: increment(pendingCreatedPaise),
-        pendingRecovered: increment(pendingRecovered),
-        pendingRecoveredPaise: increment(pendingRecoveredPaise),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    )
-    transaction.set(
-      penaltyReference,
-      {
-        penaltyId: penaltyReference.id,
-        type: 'daily',
-        status: nextPendingAmountPaise > 0 ? 'active' : 'resolved',
+      const record = {
+        collectionId,
         customerId: customerSnapshot.id,
         customerName: customerData.ownerName || '',
         shopName: customerData.shopName || '',
         collectorId,
         collectorName,
+        expectedAmount,
+        expectedAmountPaise,
+        amountCollected,
+        amountCollectedPaise,
+        amount: totalReceived,
+        amountPaise: totalReceivedPaise,
+        pendingCreated,
+        pendingCreatedPaise,
+        pendingRecovered,
+        pendingRecoveredPaise,
+        paymentMethod: payload.paymentMethod || 'cash',
+        date,
+        status,
+        overdueDays: daysBetween(date, todayKey()),
+        penaltyAmount: 0,
+        penaltyAmountPaise: 0,
+        remarks: normalizeText(payload.remarks),
+        createdById: currentUser.userId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }
+
+      const summaryReference = doc(
+        db,
+        COLLECTIONS.dailySummaries,
+        dailySummaryDocumentId(date, collectorId),
+      )
+      const penaltyReference = doc(
+        db,
+        COLLECTIONS.penalties,
+        `daily_${customerSnapshot.id}`,
+      )
+
+      transaction.set(collectionReference, record)
+      transaction.update(customerReference, {
+        totalSavings: increment(totalReceived),
+        totalSavingsPaise: increment(totalReceivedPaise),
+        pendingAmount: nextPendingAmount,
+        pendingAmountPaise: nextPendingAmountPaise,
+        pendingDays: nextPendingDays,
         overdueDays: nextPendingDays,
         penaltyAmount: paiseToMoney(dailyPenaltyPaise),
         penaltyAmountPaise: dailyPenaltyPaise,
-        pendingAmount: nextPendingAmount,
-        pendingAmountPaise: nextPendingAmountPaise,
+        lastCollectionDate: date,
+        lastDailySyncDate: date,
         lastPenaltyUpdated: todayKey(),
         updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    )
-  })
+      })
+      transaction.set(
+        summaryReference,
+        {
+          summaryId: summaryReference.id,
+          date,
+          collectorId,
+          collectorName,
+          entryCount: increment(1),
+          paidCount: increment(status === 'paid' ? 1 : 0),
+          partialCount: increment(status === 'partial' ? 1 : 0),
+          pendingCount: increment(status === 'pending' ? 1 : 0),
+          expectedAmount: increment(expectedAmount),
+          expectedAmountPaise: increment(expectedAmountPaise),
+          totalCollection: increment(totalReceived),
+          totalCollectionPaise: increment(totalReceivedPaise),
+          pendingCreated: increment(pendingCreated),
+          pendingCreatedPaise: increment(pendingCreatedPaise),
+          pendingRecovered: increment(pendingRecovered),
+          pendingRecoveredPaise: increment(pendingRecoveredPaise),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+      transaction.set(
+        penaltyReference,
+        {
+          penaltyId: penaltyReference.id,
+          type: 'daily',
+          status: nextPendingAmountPaise > 0 ? 'active' : 'resolved',
+          customerId: customerSnapshot.id,
+          customerName: customerData.ownerName || '',
+          shopName: customerData.shopName || '',
+          collectorId,
+          collectorName,
+          overdueDays: nextPendingDays,
+          penaltyAmount: paiseToMoney(dailyPenaltyPaise),
+          penaltyAmountPaise: dailyPenaltyPaise,
+          pendingAmount: nextPendingAmount,
+          pendingAmountPaise: nextPendingAmountPaise,
+          lastPenaltyUpdated: todayKey(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+
+      await applyBachatCollectionV2InTransaction({
+        transaction,
+        customerId: customerSnapshot.id,
+        customerData,
+        currentUser,
+        date,
+        paymentMethod: payload.paymentMethod || 'cash',
+        remarks: payload.remarks,
+        amountCollectedPaise,
+        pendingRecoveredPaise,
+        pendingCreatedPaise,
+        totalReceivedPaise,
+        status,
+      })
+    })
+  } catch (error) {
+    debugCollectionPermission({
+      operation: 'transaction:createDailyCollection',
+      collectionName: COLLECTIONS.dailyCollections,
+      failedPath: collectionReference.path,
+      currentUser,
+      transactionPaths: [
+        collectionReference.path,
+        customerReference.path,
+        `${COLLECTIONS.dailySummaries}/${dailySummaryDocumentId(date, currentUser?.userId)}`,
+        `${COLLECTIONS.penalties}/daily_${customer.customerId || customer.id}`,
+        `${COLLECTIONS.bachatAccounts}/${customer.customerId || customer.id}`,
+        COLLECTIONS.bachatCollections,
+        `${COLLECTIONS.bachatSummary}/main`,
+        `${COLLECTIONS.customerFinancials}/${customer.customerId || customer.id}`,
+      ],
+      error,
+    })
+    throw error
+  }
 
   return { collectionId, status }
 }

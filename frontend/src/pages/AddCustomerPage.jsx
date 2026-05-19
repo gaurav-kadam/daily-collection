@@ -68,7 +68,7 @@ function AddCustomerPage() {
       <section className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="page-title">Add Customer</h2>
-          <p className="mt-1 text-sm text-slate-600">Create a shop profile for daily collection tracking.</p>
+          <p className="mt-1 text-sm text-slate-600">Create customer identity profile. Bachat enrollment is handled separately.</p>
         </div>
         <Link to="/customers" className="btn-secondary">
           Back to Customers

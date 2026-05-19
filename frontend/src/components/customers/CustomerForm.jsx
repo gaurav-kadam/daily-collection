@@ -11,7 +11,7 @@ const initialState = {
   alternateMobile: '',
   address: '',
   area: '',
-  dailyAmount: 100,
+  dailyAmount: 0,
   joiningDate: new Date().toISOString().slice(0, 10),
   idProofType: '',
   idProofNumber: '',
@@ -42,7 +42,6 @@ function validate(values) {
   }
   if (!values.address.trim()) errors.address = 'Address is required.'
   if (!values.area.trim()) errors.area = 'Area is required.'
-  if (Number(values.dailyAmount) <= 0) errors.dailyAmount = 'Daily amount must be positive.'
 
   const profileImageError = validateCloudinaryImage(values.profilePhotoFile)
   const documentImageError = validateCloudinaryImage(values.documentPhotoFile)
@@ -128,7 +127,7 @@ function CustomerForm({
 
     onSubmit({
       ...values,
-      dailyAmount: Number(values.dailyAmount),
+      dailyAmount: Number(values.dailyAmount || 0),
     })
   }
 
@@ -186,16 +185,6 @@ function CustomerForm({
             ))}
           </datalist>
         )}
-        <FormInput
-          label="Daily Amount"
-          name="dailyAmount"
-          type="number"
-          min="1"
-          value={values.dailyAmount}
-          onChange={handleChange}
-          error={errors.dailyAmount}
-          required
-        />
         <FormInput
           label="Joining Date"
           name="joiningDate"

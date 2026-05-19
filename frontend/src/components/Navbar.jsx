@@ -7,6 +7,14 @@ import { listenNotifications } from '../services/notificationService'
 
 const titleMap = {
   '/dashboard': 'Dashboard',
+  '/dashboard/bachat': 'Bachat Dashboard',
+  '/dashboard/saving': 'Saving Dashboard',
+  '/dashboard/loan': 'Loan Dashboard',
+  '/dashboard/fd': 'FD Dashboard',
+  '/dashboard/deposit': 'Deposit Dashboard',
+  '/dashboard/expenses': 'Expenses Dashboard',
+  '/dashboard/bishi': 'Bishi Dashboard',
+  '/dashboard/investments': 'Investments Dashboard',
   '/customers': 'Customers',
   '/my-customers': 'My Customers',
   '/collections': 'Daily Collections',
