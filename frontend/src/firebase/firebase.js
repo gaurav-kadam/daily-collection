@@ -1,5 +1,6 @@
 import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
+import { getFunctions } from 'firebase/functions'
 import {
   initializeFirestore,
   persistentLocalCache,
@@ -27,5 +28,6 @@ const db = initializeFirestore(app, {
 export const firebaseApp = app
 export { db }
 export const auth = getAuth(app)
+export const functions = getFunctions(app)
 
 export default app

@@ -1,24 +1,18 @@
 import {
   collection,
-  doc,
   getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
-  runTransaction,
-  serverTimestamp,
   where,
 } from 'firebase/firestore'
 import { db } from '../firebase/firebase'
+import { listenFinanceSummary, syncLoanPenalties as syncLoanPenaltiesServer } from './erpService'
 import {
   COLLECTIONS,
-  FINANCE_RULES,
   USER_ROLES,
-  addDaysKey,
-  daysBetween,
   docsWithIds,
-  moneyToPaise,
   moneyValue,
   monthEndKey,
   monthStartKey,
@@ -27,7 +21,7 @@ import {
   paiseToMoney,
   todayKey,
 } from './firestoreService'
-import { calculateLoanMetrics, updateLoanPenalty } from './loanService'
+import { calculateLoanMetrics } from './loanService'
 
 const buildScopedQuery = (collectionName, currentUser, collectorField = 'collectorId') => {
   const ref = collection(db, collectionName)
@@ -77,13 +71,6 @@ const hasSyncedToday = (currentUser, today) => {
 const markSyncedToday = (currentUser, today) => {
   if (typeof window === 'undefined') return
   window.sessionStorage.setItem(getSyncCacheKey(currentUser, today), 'complete')
-}
-
-const runInBatches = async (tasks, batchSize = 10) => {
-  for (let index = 0; index < tasks.length; index += batchSize) {
-    const batch = tasks.slice(index, index + batchSize)
-    await Promise.all(batch.map((task) => task()))
-  }
 }
 
 const getActivePenaltyTotal = (records) =>
@@ -404,7 +391,7 @@ const cancelFrame = (handle) => {
   window.cancelAnimationFrame(handle)
 }
 
-export const listenDashboardStats = (currentUser, callback, onError) => {
+const listenLegacyDashboardStats = (currentUser, callback, onError) => {
   const today = todayKey()
   const monthStart = monthStartKey(today)
   const monthEnd = monthEndKey(today)
@@ -763,70 +750,157 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
   }
 }
 
-const syncDailyPenalty = async (customer, currentUser) => {
-  const customerId = customer.customerId || customer.id
-  const customerReference = doc(db, COLLECTIONS.customers, customerId)
-  const penaltyReference = doc(db, COLLECTIONS.penalties, `daily_${customerId}`)
+const paiseField = (record, field) => paiseToMoney(record?.[field] || 0)
 
-  await runTransaction(db, async (transaction) => {
-    const snapshot = await transaction.get(customerReference)
-    if (!snapshot.exists()) return
-    const data = snapshot.data()
-    if (data.status === 'inactive') return
-
-    const today = todayKey()
-    const cutoffDate = addDaysKey(today, -1)
-    const anchorDate = data.lastDailySyncDate || data.lastCollectionDate || data.joiningDate || today
-    const missedDays =
-      anchorDate < cutoffDate && data.lastCollectionDate !== today
-        ? daysBetween(anchorDate, cutoffDate)
-        : 0
-    const missedAmountPaise = missedDays * moneyToPaise(moneyValue(data, 'dailyAmount'))
-    const currentPendingPaise = moneyToPaise(moneyValue(data, 'pendingAmount'))
-    const nextPendingPaise = currentPendingPaise + missedAmountPaise
-    const nextPendingDays =
-      nextPendingPaise > 0 ? numberValue(data.pendingDays) + missedDays : 0
-    const nextDailySyncDate =
-      missedDays > 0
-        ? cutoffDate
-        : data.lastDailySyncDate || data.lastCollectionDate || data.joiningDate || today
-    const penaltyAmountPaise = moneyToPaise(
-      nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay,
-    )
-
-    transaction.update(customerReference, {
-      pendingAmount: paiseToMoney(nextPendingPaise),
-      pendingAmountPaise: nextPendingPaise,
-      pendingDays: nextPendingDays,
-      overdueDays: nextPendingDays,
-      penaltyAmount: paiseToMoney(penaltyAmountPaise),
-      penaltyAmountPaise,
-      lastDailySyncDate: nextDailySyncDate,
-      lastPenaltyUpdated: today,
-      updatedAt: serverTimestamp(),
-    })
-    transaction.set(
-      penaltyReference,
-      {
-        penaltyId: penaltyReference.id,
-        type: 'daily',
-        status: nextPendingPaise > 0 ? 'active' : 'resolved',
-        customerId,
-        customerName: data.ownerName || '',
-        shopName: data.shopName || '',
-        collectorId: data.assignedCollectorId || currentUser?.userId || '',
-        collectorName: data.assignedCollectorName || '',
-        overdueDays: nextPendingDays,
-        penaltyAmount: paiseToMoney(penaltyAmountPaise),
-        penaltyAmountPaise,
-        pendingAmount: paiseToMoney(nextPendingPaise),
-        pendingAmountPaise: nextPendingPaise,
-        lastPenaltyUpdated: today,
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    )
+const moduleFromSummary = (id, label, source = {}, amountField, pendingField = 'pendingAmountPaise') =>
+  makeModuleSummary({
+    id,
+    label,
+    amount: paiseField(source, amountField),
+    accounts: numberValue(source.totalAccounts || source.accounts || source.groups),
+    active: numberValue(source.activeAccounts || source.activeGroups || source.activeInvestments),
+    pending: paiseField(source, pendingField),
+    indicator: source.indicator || '',
+    progress: numberValue(source.progress),
   })
+
+const statsFromFinanceSummary = (summary) => {
+  const base = makeEmptyStats()
+  const modules = summary.modules || {}
+  const bachat = modules.bachat || {}
+  const saving = modules.saving || {}
+  const loan = modules.loan || {}
+  const fd = modules.fd || {}
+  const deposit = modules.deposit || {}
+  const expenses = modules.expenses || {}
+  const bishi = modules.bishi || {}
+  const investments = modules.investments || {}
+  const todayCollection = paiseField(summary, 'todayCollectionPaise') || paiseField(bachat, 'todayCollectionPaise')
+  const todayEmiCollection =
+    paiseField(summary, 'todayEmiCollectionPaise') || paiseField(loan, 'todayEmiCollectionPaise')
+  const monthlyDailyCollection =
+    paiseField(summary, 'monthlyDailyCollectionPaise') ||
+    paiseField(bachat, 'monthlyDailyCollectionPaise') ||
+    paiseField(bachat, 'totalCollectionsPaise')
+  const monthlyEmiCollection =
+    paiseField(summary, 'monthlyEmiCollectionPaise') ||
+    paiseField(loan, 'monthlyEmiCollectionPaise') ||
+    paiseField(loan, 'totalEMICollectedPaise')
+  const monthlyExpenses =
+    paiseField(summary, 'monthlyExpensesPaise') ||
+    paiseField(expenses, 'monthlyExpensesPaise') ||
+    paiseField(expenses, 'totalExpensesPaise')
+  const totalBachatAmount =
+    paiseField(summary, 'totalBachatAmountPaise') || paiseField(bachat, 'totalBachatAmountPaise')
+  const totalLoanGiven =
+    paiseField(summary, 'totalLoanGivenPaise') || paiseField(loan, 'totalLoanGivenPaise')
+  const totalEMICollected =
+    paiseField(summary, 'totalEMICollectedPaise') || paiseField(loan, 'totalEMICollectedPaise')
+  const remainingLoanBalance =
+    paiseField(summary, 'remainingLoanBalancePaise') || paiseField(loan, 'remainingLoanBalancePaise')
+  const totalInvestments =
+    paiseField(summary, 'totalInvestmentsPaise') || paiseField(investments, 'totalInvestmentsPaise')
+  const totalExpenses =
+    paiseField(summary, 'totalExpensesPaise') || paiseField(expenses, 'totalExpensesPaise')
+  const dailyPendingAmount = paiseField(bachat, 'pendingAmountPaise')
+  const penaltyAmount =
+    paiseField(summary, 'penaltyAmountPaise') ||
+    paiseField(bachat, 'penaltyAmountPaise') +
+      paiseField(loan, 'penaltyAmountPaise')
+  const monthlyCollection = monthlyDailyCollection + monthlyEmiCollection
+
+  return {
+    ...base,
+    totalCustomers: numberValue(summary.totalCustomers),
+    totalSavings: totalBachatAmount,
+    pendingAmount: dailyPendingAmount,
+    totalAvailableBankBalance: paiseField(summary, 'totalBankBalancePaise'),
+    totalLoanGiven,
+    totalInvestments,
+    totalExpenses,
+    totalAccounts:
+      numberValue(bachat.activeAccounts) +
+      numberValue(saving.activeAccounts) +
+      numberValue(loan.activeAccounts) +
+      numberValue(fd.activeAccounts) +
+      numberValue(deposit.activeAccounts) +
+      numberValue(bishi.activeGroups) +
+      numberValue(investments.activeInvestments),
+    totalDeposits: paiseField(deposit, 'totalDepositAmountPaise'),
+    totalFdAmount: paiseField(fd, 'totalFdAmountPaise'),
+    totalBishiCollections:
+      paiseField(bishi, 'totalBishiCollectionPaise') || paiseField(bishi, 'totalBishiAmountPaise'),
+    monthlyExpenses,
+    profitLossMtd: monthlyCollection - monthlyExpenses,
+    todayExpenses: paiseField(expenses, 'todayExpensesPaise'),
+    todayCollection,
+    todayEmiCollection,
+    monthlyCollection,
+    monthlyDailyCollection,
+    monthlyEmiCollection,
+    paidToday: numberValue(bachat.paidCount),
+    pendingToday: numberValue(bachat.pendingCount),
+    totalLoans: numberValue(loan.totalAccounts),
+    activeLoans: numberValue(loan.activeAccounts),
+    totalLoanRepaid: totalEMICollected,
+    remainingLoanBalance,
+    emiOverdueCount: numberValue(loan.overdueCount),
+    emiOverdueAmount: paiseField(loan, 'overdueAmountPaise'),
+    penaltyAmount,
+    dailyPendingAmount,
+    modules: [
+      moduleFromSummary('bachat', 'Bachat', bachat, 'totalBachatAmountPaise'),
+      moduleFromSummary('saving', 'Saving', saving, 'balancePaise'),
+      moduleFromSummary('loan', 'Loan', loan, 'totalLoanGivenPaise', 'remainingLoanBalancePaise'),
+      moduleFromSummary('fd', 'FD', fd, 'totalFdAmountPaise', 'maturityDuePaise'),
+      moduleFromSummary('deposit', 'Deposit', deposit, 'totalDepositAmountPaise'),
+      moduleFromSummary('expenses', 'Expenses', expenses, 'totalExpensesPaise', 'todayExpensesPaise'),
+      moduleFromSummary('bishi', 'Bishi', bishi, 'totalBishiCollectionPaise', 'payoutDuePaise'),
+      moduleFromSummary('investments', 'Investments', investments, 'totalInvestmentsPaise'),
+    ],
+    recentTransactions: summary.recentTransactions || [],
+    collectionTrend: summary.collectionTrend || [],
+    collectorPerformance: summary.collectorPerformance || [],
+    lastUpdatedAt: Date.now(),
+    monthlySummary: {
+      dailyCollection: monthlyDailyCollection,
+      emiCollection: monthlyEmiCollection,
+      totalCollection: monthlyCollection,
+      pendingAmount: dailyPendingAmount,
+    },
+  }
+}
+
+export const listenDashboardStats = (currentUser, callback, onError) => {
+  let legacyUnsubscribe = null
+  const startLegacy = () => {
+    if (!legacyUnsubscribe) {
+      legacyUnsubscribe = listenLegacyDashboardStats(currentUser, callback, onError)
+    }
+  }
+
+  const summaryUnsubscribe = listenFinanceSummary(
+    (summary) => {
+      if (!summary) {
+        startLegacy()
+        return
+      }
+      if (legacyUnsubscribe) {
+        legacyUnsubscribe()
+        legacyUnsubscribe = null
+      }
+      callback(statsFromFinanceSummary(summary))
+    },
+    (error) => {
+      startLegacy()
+      if (onError) onError(error)
+    },
+  )
+
+  return () => {
+    summaryUnsubscribe()
+    if (legacyUnsubscribe) legacyUnsubscribe()
+  }
 }
 
 export const syncFinanceState = async (currentUser) => {
@@ -835,48 +909,7 @@ export const syncFinanceState = async (currentUser) => {
   const today = todayKey()
   if (hasSyncedToday(currentUser, today)) return
 
-  const [customerSnapshot, loanSnapshot] = await Promise.all([
-    getDocs(
-      query(
-        collection(db, COLLECTIONS.customers),
-        ...scopedCustomerConstraints(currentUser),
-        limit(pageLimit(200, 200, 500)),
-      ),
-    ),
-    getDocs(
-      query(
-        buildScopedQuery(COLLECTIONS.loans, currentUser),
-        where('loanStatus', '==', 'active'),
-        limit(pageLimit(200, 200, 500)),
-      ),
-    ),
-  ])
-
-  const customers = docsWithIds(customerSnapshot)
-  const loans = docsWithIds(loanSnapshot)
-  const cutoffDate = addDaysKey(today, -1)
-  const staleCustomers = customers.filter(
-    (customer) => {
-      const syncDate =
-        customer.lastDailySyncDate || customer.lastCollectionDate || customer.joiningDate || today
-      return (
-        customer.status !== 'inactive' &&
-        (customer.lastPenaltyUpdated !== today || syncDate < cutoffDate)
-      )
-    },
-  )
-  const staleLoans = loans.filter((loan) => loan.lastPenaltyUpdated !== today)
-
-  const syncTasks = [
-    ...staleCustomers
-      .slice(0, 100)
-      .map((customer) => () => syncDailyPenalty(customer, currentUser)),
-    ...staleLoans
-      .slice(0, 100)
-      .map((loan) => () => updateLoanPenalty(loan, currentUser)),
-  ]
-
-  await runInBatches(syncTasks)
+  await syncLoanPenaltiesServer()
   markSyncedToday(currentUser, today)
 }
 

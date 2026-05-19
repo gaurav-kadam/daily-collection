@@ -7,7 +7,7 @@ import {
   createDailyCollection,
   listenDailyCollections,
 } from '../services/collectionService'
-import customerService from '../services/customerService'
+import { getActiveBachatAccounts } from '../services/erpService'
 import { todayKey } from '../services/firestoreService'
 import { formatCurrency } from '../utils/format'
 
@@ -32,10 +32,20 @@ function DailyCollectionPage() {
     if (!user) return undefined
 
     let isMounted = true
-    customerService
-      .getAll({ currentUser: user, status: 'active', pageSize: 200 })
+    getActiveBachatAccounts({ currentUser: user, pageSize: 200 })
       .then((data) => {
-        if (isMounted) setCustomers(data.results || [])
+        if (isMounted) {
+          setCustomers(
+            (data.results || []).map((account) => ({
+              ...account,
+              id: account.customerId || account.id,
+              ownerName: account.customerName || account.ownerName,
+              assignedCollectorId: account.collectorId,
+              assignedCollectorName: account.collectorName,
+              totalSavings: account.totalCollected,
+            })),
+          )
+        }
       })
       .catch((error) => toast.error(error.message))
 

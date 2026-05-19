@@ -209,6 +209,73 @@
       ]
     },
     {
+      "collectionGroup": "bachatAccounts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "collectorId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "shopName", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bachatAccounts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "shopName", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bachatAccounts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "maturityDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bachatCollections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bachatCollections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "collectorId", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "bachatCollections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "customerFinancials",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "activeModules", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "pendingAmountPaise", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "dailyModuleSummaries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "module", "order": "ASCENDING" },
+        { "fieldPath": "collectorId", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
