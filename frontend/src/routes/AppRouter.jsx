@@ -7,6 +7,7 @@ import { pageLoaders } from './routePreload'
 
 const LoginPage = lazy(pageLoaders.login)
 const DashboardPage = lazy(pageLoaders.dashboard)
+const ModuleDashboardPage = lazy(pageLoaders.moduleDashboard)
 const CustomersPage = lazy(pageLoaders.customers)
 const AddCustomerPage = lazy(pageLoaders.addCustomer)
 const EditCustomerPage = lazy(pageLoaders.editCustomer)
@@ -37,6 +38,7 @@ function AppRouter() {
             <Route element={<DashboardLayout />}>
               <Route index element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/dashboard/:moduleId" element={<ModuleDashboardPage />} />
               <Route path="/customers" element={<CustomersPage />} />
               <Route path="/my-customers" element={<CustomersPage />} />
               <Route path="/customers/:customerId" element={<CustomerDetailsPage />} />

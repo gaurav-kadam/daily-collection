@@ -91,6 +91,158 @@ const getActivePenaltyTotal = (records) =>
     .filter((item) => item.status === 'active')
     .reduce((sum, item) => sum + moneyValue(item, 'penaltyAmount'), 0)
 
+const timestampSortValue = (value) => {
+  if (!value) return 0
+  if (value?.toMillis) return value.toMillis()
+  const parsed = new Date(value).getTime()
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+const dateKeyForRecord = (record) =>
+  String(record.date || record.paymentDate || record.createdDate || record.transactionDate || '')
+
+const getFinanceText = (entry) =>
+  [
+    entry.module,
+    entry.type,
+    entry.category,
+    entry.kind,
+    entry.name,
+    entry.status,
+    entry.entryType,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+
+const financeAmount = (entry) =>
+  moneyValue(entry, 'amount') ||
+  moneyValue(entry, 'value') ||
+  moneyValue(entry, 'principalAmount') ||
+  moneyValue(entry, 'investmentAmount') ||
+  moneyValue(entry, 'expenseAmount') ||
+  moneyValue(entry, 'balance')
+
+const includesAny = (text, keywords) => keywords.some((keyword) => text.includes(keyword))
+
+const sumFinanceEntries = (entries, keywords, { fromDate, toDate } = {}) =>
+  entries.reduce((sum, entry) => {
+    const date = dateKeyForRecord(entry)
+    if (fromDate && date && date < fromDate) return sum
+    if (toDate && date && date > toDate) return sum
+    return includesAny(getFinanceText(entry), keywords) ? sum + financeAmount(entry) : sum
+  }, 0)
+
+const countFinanceEntries = (entries, keywords) =>
+  entries.filter((entry) => includesAny(getFinanceText(entry), keywords)).length
+
+const getActiveFinanceEntries = (entries, keywords) =>
+  entries.filter((entry) => {
+    const text = getFinanceText(entry)
+    return (
+      includesAny(text, keywords) &&
+      !['closed', 'completed', 'inactive', 'paid'].some((status) => text.includes(status))
+    )
+  })
+
+const moduleRoute = (id) => `/dashboard/${id}`
+
+const makeModuleSummary = ({
+  id,
+  label,
+  amount,
+  accounts,
+  active,
+  pending,
+  indicator,
+  progress,
+}) => ({
+  id,
+  label,
+  amount: Math.max(numberValue(amount), 0),
+  accounts: Math.max(numberValue(accounts), 0),
+  active: Math.max(numberValue(active), 0),
+  pending: Math.max(numberValue(pending), 0),
+  indicator,
+  progress: Math.max(Math.min(numberValue(progress), 100), 0),
+  route: moduleRoute(id),
+})
+
+const getRecentFinanceEntries = (entries) =>
+  [...entries]
+    .sort(
+      (first, second) =>
+        String(dateKeyForRecord(second)).localeCompare(String(dateKeyForRecord(first))) ||
+        timestampSortValue(second.createdAt) - timestampSortValue(first.createdAt),
+    )
+    .slice(0, 6)
+
+const makeRecentTransactions = ({ collections, payments, financeEntries }) =>
+  [
+    ...collections.slice(0, 4).map((item) => ({
+      id: item.collectionId || item.id,
+      title: item.shopName || item.customerName || 'Daily collection',
+      type: 'Bachat collection',
+      amount: moneyValue(item, 'amount'),
+      date: item.date,
+      status: item.status || 'received',
+    })),
+    ...payments.slice(0, 4).map((item) => ({
+      id: item.paymentId || item.id,
+      title: item.customerName || item.shopName || 'EMI payment',
+      type: 'EMI collection',
+      amount: moneyValue(item, 'principalPaid') || moneyValue(item, 'amountPaid'),
+      date: item.paymentDate,
+      status: 'received',
+    })),
+    ...getRecentFinanceEntries(financeEntries).map((item) => ({
+      id: item.entryId || item.id,
+      title: item.name || item.category || item.module || 'Finance entry',
+      type: item.type || item.module || 'Finance',
+      amount: financeAmount(item),
+      date: dateKeyForRecord(item),
+      status: item.status || 'posted',
+    })),
+  ]
+    .filter((item) => item.id)
+    .sort((first, second) => String(second.date || '').localeCompare(String(first.date || '')))
+    .slice(0, 8)
+
+const makeCollectionTrend = (collections, payments, monthStart, monthEnd) => {
+  const groups = new Map()
+  const ensureDate = (date) => {
+    if (!groups.has(date)) {
+      groups.set(date, {
+        label: date.slice(5),
+        date,
+        daily: 0,
+        emi: 0,
+        amount: 0,
+      })
+    }
+    return groups.get(date)
+  }
+
+  collections.forEach((item) => {
+    const date = item.date
+    if (!date || date < monthStart || date > monthEnd) return
+    const group = ensureDate(date)
+    group.daily += moneyValue(item, 'amount')
+    group.amount += moneyValue(item, 'amount')
+  })
+
+  payments.forEach((item) => {
+    const date = item.paymentDate
+    if (!date || date < monthStart || date > monthEnd) return
+    const amount = moneyValue(item, 'principalPaid') || moneyValue(item, 'amountPaid')
+    const group = ensureDate(date)
+    group.emi += amount
+    group.amount += amount
+  })
+
+  return [...groups.values()].sort((first, second) => first.date.localeCompare(second.date))
+}
+
 const getPendingCustomerRows = (customers, todayCollections) => {
   const collectedIds = new Set(todayCollections.map((item) => item.customerId))
 
@@ -193,6 +345,19 @@ const makeEmptyStats = () => ({
   totalCustomers: 0,
   totalSavings: 0,
   pendingAmount: 0,
+  totalAvailableBankBalance: 0,
+  totalLoanGiven: 0,
+  totalInvestments: 0,
+  totalAccounts: 0,
+  totalDeposits: 0,
+  totalFdAmount: 0,
+  totalBishiCollections: 0,
+  totalWithdrawals: 0,
+  totalMaturedPayouts: 0,
+  monthlyExpenses: 0,
+  profitLossMtd: 0,
+  todayPayouts: 0,
+  todayExpenses: 0,
   todayCollection: 0,
   todayEmiCollection: 0,
   monthlyCollection: 0,
@@ -211,6 +376,11 @@ const makeEmptyStats = () => ({
   recentLoanPayments: [],
   overdueCustomers: [],
   collectorPerformance: [],
+  modules: [],
+  recentTransactions: [],
+  collectionTrend: [],
+  collectionProgress: 0,
+  lastUpdatedAt: null,
   monthlySummary: {
     dailyCollection: 0,
     emiCollection: 0,
@@ -238,6 +408,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
   const today = todayKey()
   const monthStart = monthStartKey(today)
   const monthEnd = monthEndKey(today)
+  const dayOfMonth = Math.max(numberValue(today.slice(8), 1), 1)
   const state = {
     customers: [],
     todayCollections: [],
@@ -247,6 +418,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     monthPayments: [],
     recentPayments: [],
     penalties: [],
+    financeEntries: [],
   }
   let recomputeHandle = null
 
@@ -261,31 +433,208 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       .filter((loan) => loan.overdueDays > 0)
     const monthlyDailyCollection = getCollectionTotal(state.monthCollections)
     const monthlyEmiCollection = getPaymentTotal(state.monthPayments)
+    const totalSavings = activeCustomers.reduce(
+      (sum, item) => sum + moneyValue(item, 'totalSavings'),
+      0,
+    )
+    const totalLoanGiven = state.loans.reduce(
+      (sum, item) =>
+        sum + (moneyValue(item, 'finalDisbursedAmount') || moneyValue(item, 'loanAmount')),
+      0,
+    )
+    const totalLoanRepaid = state.loans.reduce(
+      (sum, item) => sum + moneyValue(item, 'totalPaid'),
+      0,
+    )
     const recentLoanPayments = state.recentPayments.slice(0, 6)
     const totalPenaltyAmount =
       getActivePenaltyTotal(state.penalties) ||
       overdueLoans.reduce((sum, loan) => sum + moneyValue(loan, 'penaltyAmount'), 0) +
         activeCustomers.reduce((sum, customer) => sum + moneyValue(customer, 'penaltyAmount'), 0)
+    const ledger = state.financeEntries
+    const ledgerCollections = sumFinanceEntries(ledger, ['collection', 'received', 'income'])
+    const totalDeposits = sumFinanceEntries(ledger, ['deposit'])
+    const totalFdAmount = sumFinanceEntries(ledger, ['fd', 'fixed deposit'])
+    const totalBishiCollections = sumFinanceEntries(ledger, ['bishi'])
+    const totalInvestments = sumFinanceEntries(ledger, [
+      'investment',
+      'land',
+      'asset',
+      'gold',
+      'business',
+    ])
+    const totalExpenses = sumFinanceEntries(ledger, ['expense', 'salary', 'rent', 'utility'])
+    const totalWithdrawals = sumFinanceEntries(ledger, ['withdrawal', 'withdraw'])
+    const totalMaturedPayouts = sumFinanceEntries(ledger, ['maturity', 'matured', 'payout'])
+    const monthlyExpenses = sumFinanceEntries(ledger, ['expense', 'salary', 'rent', 'utility'], {
+      fromDate: monthStart,
+      toDate: monthEnd,
+    })
+    const todayExpenses = sumFinanceEntries(ledger, ['expense', 'salary', 'rent', 'utility'], {
+      fromDate: today,
+      toDate: today,
+    })
+    const todayPayouts = sumFinanceEntries(ledger, ['withdrawal', 'withdraw', 'payout'], {
+      fromDate: today,
+      toDate: today,
+    })
+    const activeFdEntries = getActiveFinanceEntries(ledger, ['fd', 'fixed deposit'])
+    const activeDepositEntries = getActiveFinanceEntries(ledger, ['deposit'])
+    const activeBishiEntries = getActiveFinanceEntries(ledger, ['bishi'])
+    const activeInvestmentEntries = getActiveFinanceEntries(ledger, [
+      'investment',
+      'land',
+      'asset',
+      'gold',
+      'business',
+    ])
+    const monthlyCollection = monthlyDailyCollection + monthlyEmiCollection
+    const monthlyExpectedDaily = activeCustomers.reduce(
+      (sum, customer) => sum + moneyValue(customer, 'dailyAmount') * dayOfMonth,
+      0,
+    )
+    const monthlyExpectedEmi = activeLoans.reduce(
+      (sum, loan) => sum + moneyValue(loan, 'monthlyEMI'),
+      0,
+    )
+    const monthlyTarget = monthlyExpectedDaily + monthlyExpectedEmi
+    const dailyPendingAmount = pendingCustomers.reduce(
+      (sum, customer) => sum + numberValue(customer.pendingAmount),
+      0,
+    )
+    const totalAvailableBankBalance =
+      totalSavings +
+      totalLoanRepaid +
+      totalDeposits +
+      totalFdAmount +
+      totalBishiCollections +
+      ledgerCollections -
+      totalLoanGiven -
+      totalExpenses -
+      totalWithdrawals -
+      totalMaturedPayouts -
+      totalInvestments
+    const modules = [
+      makeModuleSummary({
+        id: 'bachat',
+        label: 'Bachat',
+        amount: totalSavings,
+        accounts: activeCustomers.length,
+        active: activeCustomers.length,
+        pending: dailyPendingAmount,
+        indicator: `${pendingCustomers.length} pending`,
+        progress: activeCustomers.length ? (state.todayCollections.length / activeCustomers.length) * 100 : 0,
+      }),
+      makeModuleSummary({
+        id: 'saving',
+        label: 'Saving',
+        amount: totalSavings,
+        accounts: activeCustomers.length,
+        active: activeCustomers.length,
+        pending: totalWithdrawals,
+        indicator: 'Current balances',
+        progress: totalSavings ? Math.min((monthlyDailyCollection / totalSavings) * 100, 100) : 0,
+      }),
+      makeModuleSummary({
+        id: 'loan',
+        label: 'Loan',
+        amount: totalLoanGiven,
+        accounts: state.loans.length,
+        active: activeLoans.length,
+        pending: overdueLoans.reduce((sum, loan) => sum + loan.emiDueAmount, 0),
+        indicator: `${overdueLoans.length} overdue`,
+        progress: totalLoanGiven ? (totalLoanRepaid / totalLoanGiven) * 100 : 0,
+      }),
+      makeModuleSummary({
+        id: 'fd',
+        label: 'FD',
+        amount: totalFdAmount,
+        accounts: countFinanceEntries(ledger, ['fd', 'fixed deposit']),
+        active: activeFdEntries.length,
+        pending: sumFinanceEntries(ledger, ['maturity', 'matured'], {
+          fromDate: today,
+          toDate: monthEnd,
+        }),
+        indicator: 'Maturity tracking',
+        progress: totalFdAmount ? 68 : 0,
+      }),
+      makeModuleSummary({
+        id: 'deposit',
+        label: 'Deposit',
+        amount: totalDeposits,
+        accounts: countFinanceEntries(ledger, ['deposit']),
+        active: activeDepositEntries.length,
+        pending: 0,
+        indicator: 'Deposit ledger',
+        progress: totalDeposits ? 74 : 0,
+      }),
+      makeModuleSummary({
+        id: 'expenses',
+        label: 'Expenses',
+        amount: monthlyExpenses,
+        accounts: countFinanceEntries(ledger, ['expense', 'salary', 'rent', 'utility']),
+        active: countFinanceEntries(ledger, ['expense', 'salary', 'rent', 'utility']),
+        pending: todayExpenses,
+        indicator: 'MTD operating cost',
+        progress: monthlyCollection ? (monthlyExpenses / monthlyCollection) * 100 : 0,
+      }),
+      makeModuleSummary({
+        id: 'bishi',
+        label: 'Bishi',
+        amount: totalBishiCollections,
+        accounts: countFinanceEntries(ledger, ['bishi']),
+        active: activeBishiEntries.length,
+        pending: sumFinanceEntries(ledger, ['bishi payout', 'rotation']),
+        indicator: 'Groups and payouts',
+        progress: totalBishiCollections ? 58 : 0,
+      }),
+      makeModuleSummary({
+        id: 'investments',
+        label: 'Investments',
+        amount: totalInvestments,
+        accounts: countFinanceEntries(ledger, ['investment', 'land', 'asset', 'gold', 'business']),
+        active: activeInvestmentEntries.length,
+        pending: 0,
+        indicator: 'Company assets',
+        progress: totalInvestments ? 81 : 0,
+      }),
+    ]
 
     callback({
       totalCustomers: activeCustomers.length,
-      totalSavings: activeCustomers.reduce(
-        (sum, item) => sum + moneyValue(item, 'totalSavings'),
-        0,
-      ),
+      totalSavings,
       pendingAmount: activeCustomers.reduce(
         (sum, item) => sum + moneyValue(item, 'pendingAmount'),
         0,
       ),
+      totalAvailableBankBalance,
+      totalLoanGiven,
+      totalInvestments,
+      totalAccounts:
+        activeCustomers.length +
+        activeLoans.length +
+        activeFdEntries.length +
+        activeDepositEntries.length +
+        activeBishiEntries.length,
+      totalDeposits,
+      totalFdAmount,
+      totalBishiCollections,
+      totalWithdrawals,
+      totalMaturedPayouts,
+      monthlyExpenses,
+      profitLossMtd: monthlyCollection - monthlyExpenses,
+      todayPayouts,
+      todayExpenses,
       todayCollection: getCollectionTotal(state.todayCollections),
       todayEmiCollection: getPaymentTotal(state.todayPayments),
-      monthlyCollection: monthlyDailyCollection + monthlyEmiCollection,
+      monthlyCollection,
       monthlyDailyCollection,
       monthlyEmiCollection,
       paidToday: state.todayCollections.filter((item) => item.status === 'paid').length,
       pendingToday: pendingCustomers.filter((item) => item.missedToday).length,
       totalLoans: state.loans.length,
       activeLoans: activeLoans.length,
+      totalLoanRepaid,
       remainingLoanBalance: activeLoans.reduce(
         (sum, item) => sum + moneyValue(item, 'remainingBalance'),
         0,
@@ -293,24 +642,27 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       emiOverdueCount: overdueLoans.length,
       emiOverdueAmount: overdueLoans.reduce((sum, loan) => sum + loan.emiDueAmount, 0),
       penaltyAmount: totalPenaltyAmount,
-      dailyPendingAmount: pendingCustomers.reduce(
-        (sum, customer) => sum + numberValue(customer.pendingAmount),
-        0,
-      ),
+      dailyPendingAmount,
       recentCollections: state.todayCollections.slice(0, 6),
       recentLoanPayments,
       overdueCustomers: pendingCustomers.slice(0, 6),
       collectorPerformance: state.monthCollections.length
         ? getCollectorCollectionPerformance(state.monthCollections, state.monthPayments)
         : getCollectorPerformance(state.todayCollections, state.monthPayments),
+      modules,
+      recentTransactions: makeRecentTransactions({
+        collections: state.todayCollections,
+        payments: recentLoanPayments,
+        financeEntries: ledger,
+      }),
+      collectionTrend: makeCollectionTrend(state.monthCollections, state.monthPayments, monthStart, monthEnd),
+      collectionProgress: monthlyTarget ? (monthlyCollection / monthlyTarget) * 100 : 0,
+      lastUpdatedAt: Date.now(),
       monthlySummary: {
         dailyCollection: monthlyDailyCollection,
         emiCollection: monthlyEmiCollection,
-        totalCollection: monthlyDailyCollection + monthlyEmiCollection,
-        pendingAmount: pendingCustomers.reduce(
-          (sum, customer) => sum + numberValue(customer.pendingAmount),
-          0,
-        ),
+        totalCollection: monthlyCollection,
+        pendingAmount: dailyPendingAmount,
       },
     })
   }
@@ -394,6 +746,16 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       onError,
     ),
   ]
+
+  if (currentUser?.role === USER_ROLES.admin) {
+    subscriptions.push(
+      onSnapshot(
+        query(collection(db, COLLECTIONS.financeEntries), orderBy('date', 'desc'), limit(500)),
+        (snapshot) => updateState('financeEntries', snapshot),
+        () => updateState('financeEntries', { docs: [] }),
+      ),
+    )
+  }
 
   return () => {
     if (recomputeHandle) cancelFrame(recomputeHandle)

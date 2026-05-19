@@ -1,6 +1,7 @@
 export const pageLoaders = {
   login: () => import('../pages/LoginPage'),
   dashboard: () => import('../pages/DashboardPage'),
+  moduleDashboard: () => import('../pages/ModuleDashboardPage'),
   customers: () => import('../pages/CustomersPage'),
   addCustomer: () => import('../pages/AddCustomerPage'),
   editCustomer: () => import('../pages/EditCustomerPage'),
@@ -24,6 +25,14 @@ export const pageLoaders = {
 const routePreloaders = {
   '/login': pageLoaders.login,
   '/dashboard': pageLoaders.dashboard,
+  '/dashboard/bachat': pageLoaders.moduleDashboard,
+  '/dashboard/saving': pageLoaders.moduleDashboard,
+  '/dashboard/loan': pageLoaders.moduleDashboard,
+  '/dashboard/fd': pageLoaders.moduleDashboard,
+  '/dashboard/deposit': pageLoaders.moduleDashboard,
+  '/dashboard/expenses': pageLoaders.moduleDashboard,
+  '/dashboard/bishi': pageLoaders.moduleDashboard,
+  '/dashboard/investments': pageLoaders.moduleDashboard,
   '/customers': pageLoaders.customers,
   '/my-customers': pageLoaders.customers,
   '/customers/add': pageLoaders.addCustomer,
