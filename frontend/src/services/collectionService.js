@@ -188,84 +188,84 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
         : 'pending'
 
   try {
-    await runTransaction(db, async (transaction) => {
-      const existingCollection = await transaction.get(collectionReference)
-      if (existingCollection.exists()) {
-        throw new Error('Collection for this customer already exists for selected date.')
-      }
+  await runTransaction(db, async (transaction) => {
+    const existingCollection = await transaction.get(collectionReference)
+    if (existingCollection.exists()) {
+      throw new Error('Collection for this customer already exists for selected date.')
+    }
 
-      const customerSnapshot = await transaction.get(customerReference)
-      if (!customerSnapshot.exists()) {
-        throw new Error('Customer record was not found.')
-      }
+    const customerSnapshot = await transaction.get(customerReference)
+    if (!customerSnapshot.exists()) {
+      throw new Error('Customer record was not found.')
+    }
 
-      const customerData = customerSnapshot.data()
-      const currentPendingPaise = moneyToPaise(moneyValue(customerData, 'pendingAmount'))
-      const nextPendingAmountPaise = Math.max(
-        currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
-        0,
-      )
-      const nextPendingAmount = paiseToMoney(nextPendingAmountPaise)
-      const nextPendingDays =
-        nextPendingAmountPaise === 0
-          ? 0
-          : Math.max(
-              numberValue(customerData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
-              0,
-            )
-      const dailyPenaltyPaise = moneyToPaise(nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay)
+    const customerData = customerSnapshot.data()
+    const currentPendingPaise = moneyToPaise(moneyValue(customerData, 'pendingAmount'))
+    const nextPendingAmountPaise = Math.max(
+      currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
+      0,
+    )
+    const nextPendingAmount = paiseToMoney(nextPendingAmountPaise)
+    const nextPendingDays =
+      nextPendingAmountPaise === 0
+        ? 0
+        : Math.max(
+            numberValue(customerData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
+            0,
+          )
+    const dailyPenaltyPaise = moneyToPaise(nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay)
 
-      const collectorId =
-        currentUser.role === USER_ROLES.admin
-          ? customerData.assignedCollectorId || currentUser.userId
-          : currentUser.userId
-      const collectorName =
-        customerData.assignedCollectorName ||
-        currentUser.fullName ||
-        currentUser.email ||
-        ''
-      const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise
-      const totalReceived = paiseToMoney(totalReceivedPaise)
+    const collectorId =
+      currentUser.role === USER_ROLES.admin
+        ? customerData.assignedCollectorId || currentUser.userId
+        : currentUser.userId
+    const collectorName =
+      customerData.assignedCollectorName ||
+      currentUser.fullName ||
+      currentUser.email ||
+      ''
+    const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise
+    const totalReceived = paiseToMoney(totalReceivedPaise)
 
-      const record = {
-        collectionId,
-        customerId: customerSnapshot.id,
-        customerName: customerData.ownerName || '',
-        shopName: customerData.shopName || '',
-        collectorId,
-        collectorName,
-        expectedAmount,
-        expectedAmountPaise,
-        amountCollected,
-        amountCollectedPaise,
-        amount: totalReceived,
-        amountPaise: totalReceivedPaise,
-        pendingCreated,
-        pendingCreatedPaise,
-        pendingRecovered,
-        pendingRecoveredPaise,
-        paymentMethod: payload.paymentMethod || 'cash',
-        date,
-        status,
-        overdueDays: daysBetween(date, todayKey()),
-        penaltyAmount: 0,
-        penaltyAmountPaise: 0,
-        remarks: normalizeText(payload.remarks),
-        createdById: currentUser.userId,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      }
+    const record = {
+      collectionId,
+      customerId: customerSnapshot.id,
+      customerName: customerData.ownerName || '',
+      shopName: customerData.shopName || '',
+      collectorId,
+      collectorName,
+      expectedAmount,
+      expectedAmountPaise,
+      amountCollected,
+      amountCollectedPaise,
+      amount: totalReceived,
+      amountPaise: totalReceivedPaise,
+      pendingCreated,
+      pendingCreatedPaise,
+      pendingRecovered,
+      pendingRecoveredPaise,
+      paymentMethod: payload.paymentMethod || 'cash',
+      date,
+      status,
+      overdueDays: daysBetween(date, todayKey()),
+      penaltyAmount: 0,
+      penaltyAmountPaise: 0,
+      remarks: normalizeText(payload.remarks),
+      createdById: currentUser.userId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }
 
-      const summaryReference = doc(
-        db,
-        COLLECTIONS.dailySummaries,
-        dailySummaryDocumentId(date, collectorId),
-      )
-      const penaltyReference = doc(
-        db,
-        COLLECTIONS.penalties,
-        `daily_${customerSnapshot.id}`,
-      )
+    const summaryReference = doc(
+      db,
+      COLLECTIONS.dailySummaries,
+      dailySummaryDocumentId(date, collectorId),
+    )
+    const penaltyReference = doc(
+      db,
+      COLLECTIONS.penalties,
+      `daily_${customerSnapshot.id}`,
+    )
 
       transaction.set(collectionReference, record)
       transaction.update(customerReference, {
