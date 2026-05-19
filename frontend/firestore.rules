@@ -32,6 +32,15 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/customers/$(customerId)).data.assignedCollectorId == uid;
     }
 
+    function bachatAccountAssignedTo(customerId, uid) {
+      return exists(/databases/$(database)/documents/bachatAccounts/$(customerId))
+        && get(/databases/$(database)/documents/bachatAccounts/$(customerId)).data.collectorId == uid;
+    }
+
+    function moduleCustomerAssignedTo(customerId, uid) {
+      return customerAssignedTo(customerId, uid) || bachatAccountAssignedTo(customerId, uid);
+    }
+
     function customerBalanceOnlyChanged() {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
         'totalSavings',
@@ -121,6 +130,41 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    match /bachatAccounts/{customerId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /bachatCollections/{collectionId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /bachatPenalties/{penaltyId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /bachatClosures/{closureId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /savingAccounts/{customerId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /savingTransactions/{transactionId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
     match /loans/{loanId} {
       allow read: if isAdmin()
         || (isCollector() && customerAssignedTo(resource.data.customerId, request.auth.uid));
@@ -143,6 +187,119 @@ service cloud.firestore {
           && customerAssignedTo(request.resource.data.customerId, request.auth.uid)
         );
       allow update, delete: if isAdmin();
+    }
+
+    match /loanPenalties/{penaltyId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /fdAccounts/{accountId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /fdTransactions/{transactionId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /depositAccounts/{accountId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /depositTransactions/{transactionId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /bishiGroups/{groupId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /bishiMembers/{memberId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /bishiPayments/{paymentId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /bishiRounds/{roundId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /companyInvestments/{investmentId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /expenses/{expenseId} {
+      allow read: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /customerFinancials/{customerId} {
+      allow read: if isAdmin()
+        || (isCollector() && moduleCustomerAssignedTo(customerId, request.auth.uid));
+      allow create, update, delete: if false;
+    }
+
+    match /financeSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /bachatSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /savingSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /loanSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /fdSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /depositSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /bishiSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /investmentSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /expenseSummary/{summaryId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    match /dailyModuleSummaries/{summaryId} {
+      allow read: if isAdmin()
+        || (isCollector() && resource.data.collectorId == request.auth.uid);
+      allow create, update, delete: if false;
     }
 
     match /notifications/{notificationId} {

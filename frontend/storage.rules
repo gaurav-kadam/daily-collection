@@ -24,8 +24,14 @@ service firebase.storage {
       return firestore.get(/databases/(default)/documents/customers/$(customerId)).data.assignedCollectorId == uid;
     }
 
+    function bachatAccountAssignedTo(customerId, uid) {
+      return firestore.exists(/databases/(default)/documents/bachatAccounts/$(customerId))
+        && firestore.get(/databases/(default)/documents/bachatAccounts/$(customerId)).data.collectorId == uid;
+    }
+
     match /customerPhotos/{customerId}/{fileName} {
-      allow read: if isAdmin() || (signedIn() && customerAssignedTo(customerId, request.auth.uid));
+      allow read: if isAdmin()
+        || (signedIn() && (customerAssignedTo(customerId, request.auth.uid) || bachatAccountAssignedTo(customerId, request.auth.uid)));
       allow create, update, delete: if false;
     }
   }

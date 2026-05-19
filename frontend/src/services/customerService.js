@@ -9,8 +9,6 @@ import {
   query,
   runTransaction,
   serverTimestamp,
-  setDoc,
-  updateDoc,
   where,
 } from 'firebase/firestore'
 import { auth, db } from '../firebase/firebase'
@@ -26,6 +24,12 @@ import {
   pageLimit,
 } from './firestoreService'
 import { uploadCustomerImage } from './cloudinaryService'
+import {
+  createCustomerIdentity as createCustomerIdentityCallable,
+  decorateCustomerFinance,
+  decorateCustomersFinance,
+  updateCustomerIdentity,
+} from './erpService'
 
 const customersRef = collection(db, COLLECTIONS.customers)
 const usersRef = collection(db, COLLECTIONS.users)
@@ -139,7 +143,11 @@ export const listenCustomers = (currentUser, callback, onError) => {
 
   return onSnapshot(
     query(customersRef, ...constraints),
-    (snapshot) => callback(docsWithIds(snapshot)),
+    (snapshot) => {
+      decorateCustomersFinance(docsWithIds(snapshot))
+        .then(callback)
+        .catch(() => callback(docsWithIds(snapshot)))
+    },
     onError,
   )
 }
@@ -218,23 +226,54 @@ export const createCustomer = async (payload, currentUser) => {
     updatedAt: serverTimestamp(),
   }
 
-  debugFirestoreWrite('customer:set:start', {
+  const functionPayload = {
+    customerId: customerReference.id,
+    shopName,
+    ownerName,
+    mobile,
+    alternateMobile,
+    area,
+    address: record.address,
+    dailyAmount,
+    joiningDate: payload.joiningDate || null,
+    assignedCollectorId: record.assignedCollectorId,
+    assignedCollectorName: record.assignedCollectorName,
+    status: record.status,
+    idProofType: record.idProofType,
+    idProofNumber: record.idProofNumber,
+    notes: record.notes,
+    profilePhotoUrl,
+    documentPhotoUrl,
+    photoUrl: profilePhotoUrl,
+    photo: profilePhotoUrl,
+    createBachatAccount: moneyToPaise(dailyAmount) > 0,
+  }
+
+  debugFirestoreWrite('customer:function:start', {
     path: customerReference.path,
-    customerId: record.customerId,
+    customerId: functionPayload.customerId,
     authUserId: auth.currentUser?.uid || '',
     appUserId: currentUser?.userId || '',
     appRole: currentUser?.role || '',
-    hasProfilePhotoUrl: Boolean(record.profilePhotoUrl),
-    hasDocumentPhotoUrl: Boolean(record.documentPhotoUrl),
+    hasProfilePhotoUrl: Boolean(functionPayload.profilePhotoUrl),
+    hasDocumentPhotoUrl: Boolean(functionPayload.documentPhotoUrl),
   })
   try {
-    await setDoc(customerReference, record)
-    debugFirestoreWrite('customer:set:success', {
+    const response = await createCustomerIdentityCallable(functionPayload)
+    const customer = decorateCustomerFinance(
+      response.customer || { id: customerReference.id, ...functionPayload },
+      null,
+      response.bachatAccount,
+    )
+    debugFirestoreWrite('customer:function:success', {
       path: customerReference.path,
-      customerId: record.customerId,
+      customerId: customer.customerId,
     })
+    cacheCustomer(customer)
+    listCache.clear()
+    return customer
   } catch (error) {
-    debugFirestoreWrite('customer:set:error', {
+    debugFirestoreWrite('customer:function:error', {
       path: customerReference.path,
       code: error.code,
       message: error.message,
@@ -244,10 +283,6 @@ export const createCustomer = async (payload, currentUser) => {
     })
     throw error
   }
-  const customer = { id: customerReference.id, ...record }
-  cacheCustomer(customer)
-  listCache.clear()
-  return customer
 }
 
 export const getAll = async ({
@@ -269,7 +304,8 @@ export const getAll = async ({
   constraints.push(limit(pageLimit(pageSize)))
 
   const snapshot = await getDocs(query(customersRef, ...constraints))
-  const results = docsWithIds(snapshot)
+  const decoratedCustomers = await decorateCustomersFinance(docsWithIds(snapshot))
+  const results = decoratedCustomers
   results.forEach(cacheCustomer)
   const response = {
     results,
@@ -298,7 +334,7 @@ export const searchCustomers = async ({
   constraints.push(limit(pageLimit(pageSize, 25, 50)))
 
   const snapshot = await getDocs(query(customersRef, ...constraints))
-  const results = docsWithIds(snapshot)
+  const results = await decorateCustomersFinance(docsWithIds(snapshot))
     .filter((customer) => {
       if (tokens.length <= 1) return true
       const searchableText = normalizeSearchText(
@@ -329,9 +365,10 @@ export const getById = async (customerId) => {
 
   const snapshot = await getDoc(doc(db, COLLECTIONS.customers, customerId))
   if (snapshot.exists()) {
-    const customer = { id: snapshot.id, ...snapshot.data() }
-    cacheCustomer(customer)
-    return customer
+    const customer = decorateCustomerFinance({ id: snapshot.id, ...snapshot.data() })
+    const decorated = (await decorateCustomersFinance([customer]))[0]
+    cacheCustomer(decorated)
+    return decorated
   }
 
   const fieldSnapshot = await getDocs(
@@ -340,7 +377,7 @@ export const getById = async (customerId) => {
   if (fieldSnapshot.empty) throw new Error('Customer not found.')
 
   const match = fieldSnapshot.docs[0]
-  const customer = { id: match.id, ...match.data() }
+  const customer = (await decorateCustomersFinance([{ id: match.id, ...match.data() }]))[0]
   cacheCustomer(customer)
   return customer
 }
@@ -508,10 +545,19 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
     updates.assignedCollectorName = collectorSnapshot.data()?.fullName || ''
   }
 
-  await updateDoc(doc(db, COLLECTIONS.customers, customerId), updates)
+  const functionPayload = { ...updates }
+  delete functionPayload.updatedAt
+  const response = await updateCustomerIdentity({
+    customerId,
+    ...functionPayload,
+  })
   customerCache.delete(customerId)
   listCache.clear()
-  return getById(customerId)
+  const updatedCustomer = response?.customer
+    ? decorateCustomerFinance(response.customer)
+    : await getById(customerId)
+  cacheCustomer(updatedCustomer)
+  return updatedCustomer
 }
 
 export default {

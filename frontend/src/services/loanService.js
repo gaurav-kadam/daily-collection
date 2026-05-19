@@ -22,13 +22,11 @@ import {
   docsWithIds,
   moneyToPaise,
   moneyValue,
-  normalizeMoney,
-  normalizeText,
   numberValue,
   pageLimit,
-  paiseToMoney,
   todayKey,
 } from './firestoreService'
+import { createLoan as createLoanCallable } from './erpService'
 
 const loansRef = collection(db, COLLECTIONS.loans)
 const paymentsRef = collection(db, COLLECTIONS.emiPayments)
@@ -146,80 +144,20 @@ export const getLoanEligibility = async (customer) => {
 }
 
 export const createLoan = async ({ customer, payload, currentUser }) => {
-  const loanReference = doc(loansRef)
   const eligibility = await getLoanEligibility(customer)
   if (!eligibility.eligible) {
     throw new Error(eligibility.reasons[0])
   }
 
-  const loanAmount = normalizeMoney(payload.loanAmount)
-  const loanAmountPaise = moneyToPaise(loanAmount)
-  const processingFee = normalizeMoney(
-    payload.processingFee === undefined || payload.processingFee === ''
-      ? processingFeeForAmount(loanAmount)
-      : payload.processingFee,
-  )
-  const processingFeePaise = moneyToPaise(processingFee)
-  const durationMonths = Math.max(numberValue(payload.loanDurationMonths, 12), 1)
-  const interestRate = numberValue(payload.interestRate, FINANCE_RULES.defaultInterestRate)
-  const totalPayableAmount = normalizeMoney(
-    loanAmount + loanAmount * (interestRate / 100),
-  )
-  const totalPayableAmountPaise = moneyToPaise(totalPayableAmount)
-  const monthlyEMIPaise = Math.ceil(totalPayableAmountPaise / durationMonths)
-  const monthlyEMI = paiseToMoney(monthlyEMIPaise)
-  const loanDate = payload.loanDate || todayKey()
-  const dueDate = addMonthsKey(loanDate, durationMonths)
-  const nextDueDate = addMonthsKey(loanDate, 1)
-
-  const record = {
-    loanId: loanReference.id,
+  const response = await createLoanCallable({
+    ...payload,
     customerId: customer.customerId || customer.id,
-    customerName: customer.ownerName || '',
-    shopName: customer.shopName || '',
     collectorId: customer.assignedCollectorId || '',
     collectorName: customer.assignedCollectorName || '',
-    loanAmount,
-    loanAmountPaise,
-    processingFee,
-    processingFeePaise,
-    finalDisbursedAmount: Math.max(loanAmount - processingFee, 0),
-    finalDisbursedAmountPaise: Math.max(loanAmountPaise - processingFeePaise, 0),
-    interestRate,
-    totalPayableAmount,
-    totalPayableAmountPaise,
-    remainingBalance: totalPayableAmount,
-    remainingBalancePaise: totalPayableAmountPaise,
-    totalPaid: 0,
-    totalPaidPaise: 0,
-    paidInstallments: 0,
-    loanDurationMonths: durationMonths,
-    monthlyEMI,
-    monthlyEMIPaise,
-    loanDate,
-    dueDate,
-    nextDueDate,
-    overdueDays: 0,
-    penaltyAmount: 0,
-    penaltyAmountPaise: 0,
-    lastPenaltyUpdated: null,
-    lastEMIPaymentDate: null,
-    loanStatus: payload.loanStatus || 'active',
-    remarks: normalizeText(payload.remarks),
     createdById: currentUser?.userId || '',
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  }
-
-  await runTransaction(db, async (transaction) => {
-    transaction.set(loanReference, record)
-    transaction.update(doc(db, COLLECTIONS.customers, record.customerId), {
-      loanStatus: 'active',
-      activeLoanId: loanReference.id,
-      updatedAt: serverTimestamp(),
-    })
   })
-  return record
+
+  return response.loan
 }
 
 export const getAll = async ({

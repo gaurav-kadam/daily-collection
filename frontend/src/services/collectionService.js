@@ -3,38 +3,34 @@ import {
   doc,
   getDoc,
   getDocs,
-  increment,
   limit,
   onSnapshot,
   orderBy,
   query,
-  runTransaction,
-  serverTimestamp,
   where,
 } from 'firebase/firestore'
 import { db } from '../firebase/firebase'
 import {
   COLLECTIONS,
-  FINANCE_RULES,
   USER_ROLES,
   addDaysKey,
-  daysBetween,
   docsWithIds,
-  moneyToPaise,
   moneyValue,
-  normalizeText,
   numberValue,
   pageLimit,
-  paiseToMoney,
   todayKey,
 } from './firestoreService'
+import {
+  getBachatAccount,
+  getActiveBachatAccounts,
+  listenBachatCollections,
+  recordBachatCollection,
+} from './erpService'
 
-const collectionsRef = collection(db, COLLECTIONS.dailyCollections)
-const customersRef = collection(db, COLLECTIONS.customers)
+const collectionsRef = collection(db, COLLECTIONS.bachatCollections)
+const legacyCollectionsRef = collection(db, COLLECTIONS.dailyCollections)
 
 export const collectionDocumentId = (customerId, date) => `${customerId}_${date}`
-
-const dailySummaryDocumentId = (date, collectorId) => `${date}_${collectorId || 'unassigned'}`
 
 const mapCollectionRecord = (record) => ({
   ...record,
@@ -69,10 +65,20 @@ const getCollectionsForCustomerId = async ({ customerId, currentUser, pageSize }
         limit(pageLimit(pageSize, 25, 100)),
       ),
     )
-    return docsWithIds(snapshot).map(mapCollectionRecord)
+    const results = docsWithIds(snapshot).map(mapCollectionRecord)
+    if (results.length) return results
+    const legacySnapshot = await getDocs(
+      query(
+        legacyCollectionsRef,
+        ...constraints,
+        orderBy('date', 'desc'),
+        limit(pageLimit(pageSize, 25, 100)),
+      ),
+    )
+    return docsWithIds(legacySnapshot).map(mapCollectionRecord)
   } catch {
     const snapshot = await getDocs(
-      query(collectionsRef, ...constraints, limit(pageLimit(pageSize, 25, 100))),
+      query(legacyCollectionsRef, ...constraints, limit(pageLimit(pageSize, 25, 100))),
     )
     return sortCollectionsDesc(docsWithIds(snapshot).map(mapCollectionRecord))
   }
@@ -107,20 +113,7 @@ export const getByCustomerIds = async ({
 }
 
 export const listenDailyCollections = (currentUser, date = todayKey(), callback, onError) => {
-  const constraints =
-    currentUser?.role === USER_ROLES.collector
-      ? [
-          where('collectorId', '==', currentUser.userId),
-          where('date', '==', date),
-          orderBy('createdAt', 'desc'),
-        ]
-      : [where('date', '==', date), orderBy('createdAt', 'desc')]
-
-  return onSnapshot(
-    query(collectionsRef, ...constraints),
-    (snapshot) => callback(docsWithIds(snapshot)),
-    onError,
-  )
+  return listenBachatCollections(currentUser, date, callback, onError)
 }
 
 export const listenCollectionHistory = (currentUser, callback, onError) => {
@@ -136,170 +129,22 @@ export const listenCollectionHistory = (currentUser, callback, onError) => {
   )
 }
 
-export const createDailyCollection = async ({ customer, payload, currentUser }) => {
+export const createDailyCollection = async ({ customer, payload }) => {
   const date = payload.date || todayKey()
-  const collectionId = collectionDocumentId(customer.customerId || customer.id, date)
-  const collectionReference = doc(db, COLLECTIONS.dailyCollections, collectionId)
-  const customerReference = doc(db, COLLECTIONS.customers, customer.customerId || customer.id)
-  const expectedAmountPaise = moneyToPaise(moneyValue(customer, 'dailyAmount'))
-  const amountCollectedPaise = moneyToPaise(payload.amountCollected)
-  const pendingRecoveredPaise = Math.min(
-    moneyToPaise(payload.pendingRecovered),
-    moneyToPaise(moneyValue(customer, 'pendingAmount')),
-  )
-  const pendingCreatedPaise = Math.max(expectedAmountPaise - amountCollectedPaise, 0)
-  const expectedAmount = paiseToMoney(expectedAmountPaise)
-  const amountCollected = paiseToMoney(amountCollectedPaise)
-  const pendingRecovered = paiseToMoney(pendingRecoveredPaise)
-  const pendingCreated = paiseToMoney(pendingCreatedPaise)
-  const status =
-    amountCollectedPaise >= expectedAmountPaise
-      ? 'paid'
-      : amountCollectedPaise > 0
-        ? 'partial'
-        : 'pending'
-
-  await runTransaction(db, async (transaction) => {
-    const existingCollection = await transaction.get(collectionReference)
-    if (existingCollection.exists()) {
-      throw new Error('Collection for this customer already exists for selected date.')
-    }
-
-    const customerSnapshot = await transaction.get(customerReference)
-    if (!customerSnapshot.exists()) {
-      throw new Error('Customer record was not found.')
-    }
-
-    const customerData = customerSnapshot.data()
-    const currentPendingPaise = moneyToPaise(moneyValue(customerData, 'pendingAmount'))
-    const nextPendingAmountPaise = Math.max(
-      currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
-      0,
-    )
-    const nextPendingAmount = paiseToMoney(nextPendingAmountPaise)
-    const nextPendingDays =
-      nextPendingAmountPaise === 0
-        ? 0
-        : Math.max(
-            numberValue(customerData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
-            0,
-          )
-    const dailyPenaltyPaise = moneyToPaise(nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay)
-
-    const collectorId =
-      currentUser.role === USER_ROLES.admin
-        ? customerData.assignedCollectorId || currentUser.userId
-        : currentUser.userId
-    const collectorName =
-      customerData.assignedCollectorName ||
-      currentUser.fullName ||
-      currentUser.email ||
-      ''
-    const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise
-    const totalReceived = paiseToMoney(totalReceivedPaise)
-
-    const record = {
-      collectionId,
-      customerId: customerSnapshot.id,
-      customerName: customerData.ownerName || '',
-      shopName: customerData.shopName || '',
-      collectorId,
-      collectorName,
-      expectedAmount,
-      expectedAmountPaise,
-      amountCollected,
-      amountCollectedPaise,
-      amount: totalReceived,
-      amountPaise: totalReceivedPaise,
-      pendingCreated,
-      pendingCreatedPaise,
-      pendingRecovered,
-      pendingRecoveredPaise,
-      paymentMethod: payload.paymentMethod || 'cash',
-      date,
-      status,
-      overdueDays: daysBetween(date, todayKey()),
-      penaltyAmount: 0,
-      penaltyAmountPaise: 0,
-      remarks: normalizeText(payload.remarks),
-      createdById: currentUser.userId,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    }
-
-    const summaryReference = doc(
-      db,
-      COLLECTIONS.dailySummaries,
-      dailySummaryDocumentId(date, collectorId),
-    )
-    const penaltyReference = doc(
-      db,
-      COLLECTIONS.penalties,
-      `daily_${customerSnapshot.id}`,
-    )
-
-    transaction.set(collectionReference, record)
-    transaction.update(customerReference, {
-      totalSavings: increment(totalReceived),
-      totalSavingsPaise: increment(totalReceivedPaise),
-      pendingAmount: nextPendingAmount,
-      pendingAmountPaise: nextPendingAmountPaise,
-      pendingDays: nextPendingDays,
-      overdueDays: nextPendingDays,
-      penaltyAmount: paiseToMoney(dailyPenaltyPaise),
-      penaltyAmountPaise: dailyPenaltyPaise,
-      lastCollectionDate: date,
-      lastDailySyncDate: date,
-      lastPenaltyUpdated: todayKey(),
-      updatedAt: serverTimestamp(),
-    })
-    transaction.set(
-      summaryReference,
-      {
-        summaryId: summaryReference.id,
-        date,
-        collectorId,
-        collectorName,
-        entryCount: increment(1),
-        paidCount: increment(status === 'paid' ? 1 : 0),
-        partialCount: increment(status === 'partial' ? 1 : 0),
-        pendingCount: increment(status === 'pending' ? 1 : 0),
-        expectedAmount: increment(expectedAmount),
-        expectedAmountPaise: increment(expectedAmountPaise),
-        totalCollection: increment(totalReceived),
-        totalCollectionPaise: increment(totalReceivedPaise),
-        pendingCreated: increment(pendingCreated),
-        pendingCreatedPaise: increment(pendingCreatedPaise),
-        pendingRecovered: increment(pendingRecovered),
-        pendingRecoveredPaise: increment(pendingRecoveredPaise),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    )
-    transaction.set(
-      penaltyReference,
-      {
-        penaltyId: penaltyReference.id,
-        type: 'daily',
-        status: nextPendingAmountPaise > 0 ? 'active' : 'resolved',
-        customerId: customerSnapshot.id,
-        customerName: customerData.ownerName || '',
-        shopName: customerData.shopName || '',
-        collectorId,
-        collectorName,
-        overdueDays: nextPendingDays,
-        penaltyAmount: paiseToMoney(dailyPenaltyPaise),
-        penaltyAmountPaise: dailyPenaltyPaise,
-        pendingAmount: nextPendingAmount,
-        pendingAmountPaise: nextPendingAmountPaise,
-        lastPenaltyUpdated: todayKey(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    )
+  const response = await recordBachatCollection({
+    customerId: customer.customerId || customer.id,
+    date,
+    amountCollected: payload.amountCollected,
+    pendingRecovered: payload.pendingRecovered,
+    paymentMethod: payload.paymentMethod,
+    remarks: payload.remarks,
   })
 
-  return { collectionId, status }
+  return {
+    collectionId: response.collectionId || collectionDocumentId(customer.customerId || customer.id, date),
+    status: response.status,
+    record: response.record,
+  }
 }
 
 export const getAll = async ({
@@ -324,7 +169,11 @@ export const getAll = async ({
   constraints.push(limit(pageLimit(pageSize)))
 
   const snapshot = await getDocs(query(collectionsRef, ...constraints))
-  const results = docsWithIds(snapshot).map(mapCollectionRecord)
+  let results = docsWithIds(snapshot).map(mapCollectionRecord)
+  if (!results.length) {
+    const legacySnapshot = await getDocs(query(legacyCollectionsRef, ...constraints))
+    results = docsWithIds(legacySnapshot).map(mapCollectionRecord)
+  }
   return {
     results,
     count: results.length,
@@ -338,7 +187,13 @@ export const getToday = async ({ date = todayKey(), currentUser } = {}) => {
       : [where('date', '==', date)]
 
   const snapshot = await getDocs(query(collectionsRef, ...constraints, orderBy('createdAt', 'desc')))
-  const records = docsWithIds(snapshot).map(mapCollectionRecord)
+  let records = docsWithIds(snapshot).map(mapCollectionRecord)
+  if (!records.length) {
+    const legacySnapshot = await getDocs(
+      query(legacyCollectionsRef, ...constraints, orderBy('createdAt', 'desc')),
+    )
+    records = docsWithIds(legacySnapshot).map(mapCollectionRecord)
+  }
   const totalCollection = records.reduce((sum, record) => sum + moneyValue(record, 'amount'), 0)
   const paid = records.filter((record) => record.status === 'paid')
 
@@ -353,42 +208,38 @@ export const getToday = async ({ date = todayKey(), currentUser } = {}) => {
 }
 
 export const getPending = async ({ pageSize = 100, date = todayKey(), currentUser } = {}) => {
-  const customerConstraints =
-    currentUser?.role === USER_ROLES.collector
-      ? [
-          where('assignedCollectorId', '==', currentUser.userId),
-          where('status', '==', 'active'),
-          orderBy('shopName'),
-        ]
-      : [where('status', '==', 'active'), orderBy('shopName')]
   const collectionConstraints =
     currentUser?.role === USER_ROLES.collector
       ? [where('collectorId', '==', currentUser.userId), where('date', '==', date)]
       : [where('date', '==', date)]
 
-  const [customerSnapshot, collectionSnapshot] = await Promise.all([
-    getDocs(query(customersRef, ...customerConstraints, limit(pageLimit(pageSize, 100, 500)))),
+  const [accountData, collectionSnapshot] = await Promise.all([
+    getActiveBachatAccounts({ currentUser, pageSize }),
     getDocs(query(collectionsRef, ...collectionConstraints)),
   ])
   const collectedCustomerIds = new Set(
     docsWithIds(collectionSnapshot).map((collectionRecord) => collectionRecord.customerId),
   )
   const yesterday = addDaysKey(date, -1)
-  const results = docsWithIds(customerSnapshot)
-    .filter((customer) => !collectedCustomerIds.has(customer.customerId || customer.id))
-    .map((customer) => ({
-      ...customer,
-      customerName: customer.ownerName,
-      collectorName: customer.assignedCollectorName,
+  const results = (accountData.results || [])
+    .filter((account) => !collectedCustomerIds.has(account.customerId || account.id))
+    .map((account) => ({
+      ...account,
+      id: account.customerId || account.id,
+      customerName: account.customerName,
+      ownerName: account.customerName,
+      assignedCollectorId: account.collectorId,
+      assignedCollectorName: account.collectorName,
+      collectorName: account.collectorName,
       pendingAmount:
-        moneyValue(customer, 'pendingAmount') +
-        (customer.lastCollectionDate && customer.lastCollectionDate < date
-          ? moneyValue(customer, 'dailyAmount')
+        moneyValue(account, 'pendingAmount') +
+        (account.lastCollectionDate && account.lastCollectionDate < date
+          ? moneyValue(account, 'dailyAmount')
           : 0),
       pendingDays:
-        numberValue(customer.pendingDays) +
-        (customer.lastCollectionDate && customer.lastCollectionDate <= yesterday ? 1 : 0),
-      lastPaymentDate: customer.lastCollectionDate || '',
+        numberValue(account.pendingDays) +
+        (account.lastCollectionDate && account.lastCollectionDate <= yesterday ? 1 : 0),
+      lastPaymentDate: account.lastCollectionDate || '',
     }))
 
   return {
@@ -402,7 +253,8 @@ export const create = async (payload, currentUser) => {
   const customerSnapshot = await getDoc(doc(db, COLLECTIONS.customers, customerId))
   if (!customerSnapshot.exists()) throw new Error('Customer record was not found.')
   const customer = { id: customerSnapshot.id, ...customerSnapshot.data() }
-  const expectedAmount = moneyValue(customer, 'dailyAmount')
+  const account = await getBachatAccount(customerId)
+  const expectedAmount = moneyValue(account || customer, 'dailyAmount')
   const receivedAmount = numberValue(payload.amount)
   const isMissed = ['pending', 'missed'].includes(payload.status)
 

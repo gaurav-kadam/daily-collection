@@ -38,6 +38,7 @@ import useDebouncedValue from '../hooks/useDebouncedValue'
 import collectionService from '../services/collectionService'
 import { getOptimizedImageUrl } from '../services/cloudinaryService'
 import customerService from '../services/customerService'
+import { getBachatAccount } from '../services/erpService'
 import { listenDashboardStats, syncFinanceState } from '../services/dashboardService'
 import {
   addDaysKey,
@@ -300,14 +301,16 @@ function BachatSummaryTile({ label, value, tone = 'slate' }) {
 }
 
 function calculateBachatDetails(customer) {
-  const dailyAmount = moneyValue(customer, 'dailyAmount')
+  const account = customer.bachatAccount || customer
+  const dailyAmount = moneyValue(account, 'dailyAmount') || moneyValue(customer, 'dailyAmount')
   const monthlyAmount = dailyAmount * 30
-  const totalDeposited = moneyValue(customer, 'totalSavings')
-  const pendingAmount = moneyValue(customer, 'pendingAmount')
-  const penaltyAmount = moneyValue(customer, 'penaltyAmount')
-  const pendingDays = numberValue(customer.pendingDays)
-  const startDate = customer.joiningDate || customer.lastDailySyncDate || todayKey()
-  const maturityDate = addMonthsKey(startDate, BACHAT_DURATION_MONTHS)
+  const totalDeposited =
+    moneyValue(account, 'totalCollected') || moneyValue(customer, 'totalSavings')
+  const pendingAmount = moneyValue(account, 'pendingAmount') || moneyValue(customer, 'pendingAmount')
+  const penaltyAmount = moneyValue(account, 'penaltyAmount') || moneyValue(customer, 'penaltyAmount')
+  const pendingDays = numberValue(account.pendingDays ?? customer.pendingDays)
+  const startDate = account.startDate || customer.joiningDate || customer.lastDailySyncDate || todayKey()
+  const maturityDate = account.maturityDate || addMonthsKey(startDate, BACHAT_DURATION_MONTHS)
   const completedMonths = Math.min(elapsedMonthlyInstallments(startDate), BACHAT_DURATION_MONTHS)
   const remainingMonths = Math.max(BACHAT_DURATION_MONTHS - completedMonths, 0)
   const paidMonths = monthlyAmount ? Math.min(Math.floor(totalDeposited / monthlyAmount), BACHAT_DURATION_MONTHS) : 0
@@ -577,8 +580,14 @@ function BachatDashboardView({ stats, moduleSummary, user }) {
     }
   }, [debouncedSearch, user])
 
-  const openCustomer = (customer) => {
-    setSelectedCustomer(customer)
+  const openCustomer = async (customer) => {
+    const account = customer.bachatAccount || (await getBachatAccount(customerRouteId(customer)))
+    if (!account || account.status !== 'active') {
+      toast.error('Customer is not enrolled in Bachat.')
+      return
+    }
+
+    setSelectedCustomer({ ...customer, bachatAccount: account })
     setSearch('')
     setSearchResults([])
     setCollections([])
