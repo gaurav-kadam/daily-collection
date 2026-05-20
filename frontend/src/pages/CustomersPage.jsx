@@ -12,7 +12,7 @@ import {
   searchCustomers,
 } from '../services/customerService'
 import { USER_ROLES } from '../services/firestoreService'
-import { formatCurrency, formatPhone } from '../utils/format'
+import { formatPhone } from '../utils/format'
 
 const customerRouteId = (customer) => customer.id || customer.customerId
 
@@ -160,9 +160,7 @@ function CustomersPage() {
                 <th className="px-4 py-3">Shop</th>
                 <th className="px-4 py-3">Owner</th>
                 <th className="px-4 py-3">Mobile</th>
-                <th className="px-4 py-3">Daily</th>
-                <th className="px-4 py-3">Savings</th>
-                <th className="px-4 py-3">Pending</th>
+                <th className="px-4 py-3">Area</th>
                 <th className="px-4 py-3">Collector</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Profile</th>
@@ -178,13 +176,7 @@ function CustomersPage() {
                   <td className="px-4 py-3 font-semibold text-slate-950">{customer.shopName}</td>
                   <td className="px-4 py-3 text-slate-600">{customer.ownerName}</td>
                   <td className="px-4 py-3 text-slate-600">{formatPhone(customer.mobile)}</td>
-                  <td className="px-4 py-3 text-slate-900">{formatCurrency(customer.dailyAmount)}</td>
-                  <td className="px-4 py-3 text-emerald-700">
-                    {formatCurrency(customer.totalSavings)}
-                  </td>
-                  <td className="px-4 py-3 text-rose-700">
-                    {formatCurrency(customer.pendingAmount)}
-                  </td>
+                  <td className="px-4 py-3 text-slate-600">{customer.area || '-'}</td>
                   <td className="px-4 py-3 text-slate-600">
                     {customer.assignedCollectorName || '-'}
                   </td>
@@ -208,7 +200,7 @@ function CustomersPage() {
               ))}
               {paginatedCustomers.length === 0 && (
                 <tr>
-                  <td className="px-4 py-8 text-center text-slate-500" colSpan="9">
+                  <td className="px-4 py-8 text-center text-slate-500" colSpan="7">
                     No customers found
                   </td>
                 </tr>

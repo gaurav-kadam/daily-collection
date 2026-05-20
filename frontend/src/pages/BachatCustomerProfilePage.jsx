@@ -7,8 +7,10 @@ import StatusBadge from '../components/customers/StatusBadge'
 import useAuth from '../hooks/useAuth'
 import {
   BACHAT_RULES,
+  buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
   getBachatCollectionsByCustomer,
+  getBachatPenaltyRecoveryHistory,
   listenBachatAccount,
   listenBachatClosuresByCustomer,
   listenBachatPenaltiesByCustomer,
@@ -32,7 +34,7 @@ function CompactItem({ label, value }) {
   )
 }
 
-function SummaryCard({ label, value, tone = 'slate' }) {
+function SummaryCard({ label, value, tone = 'slate', onClick }) {
   const tones = {
     slate: 'bg-slate-50 text-slate-950',
     emerald: 'bg-emerald-50 text-emerald-900',
@@ -40,12 +42,46 @@ function SummaryCard({ label, value, tone = 'slate' }) {
     rose: 'bg-rose-50 text-rose-900',
     cyan: 'bg-cyan-50 text-cyan-900',
   }
-
-  return (
-    <article className={`rounded-lg p-4 ${tones[tone] || tones.slate}`}>
+  const className = `rounded-lg p-4 ${tones[tone] || tones.slate}`
+  const content = (
+    <>
       <p className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</p>
       <p className="mt-2 font-display text-xl font-bold">{value}</p>
+    </>
+  )
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={`${className} w-full text-left transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400`}
+        onClick={onClick}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return (
+    <article className={className}>
+      {content}
     </article>
+  )
+}
+
+function PenaltyStatusPill({ status }) {
+  const normalized = keyFromValue(status || 'pending')
+  const tones = {
+    pending: 'bg-amber-50 text-amber-800 ring-amber-100',
+    partial: 'bg-cyan-50 text-cyan-800 ring-cyan-100',
+    recovered: 'bg-emerald-50 text-emerald-800 ring-emerald-100',
+    waived: 'bg-slate-100 text-slate-700 ring-slate-200',
+  }
+
+  return (
+    <span className={`inline-flex rounded-lg px-2.5 py-1 text-xs font-semibold capitalize ring-1 ${tones[normalized] || tones.pending}`}>
+      {normalized}
+    </span>
   )
 }
 
@@ -73,6 +109,10 @@ function BachatCustomerProfilePage() {
   const [historyHasMore, setHistoryHasMore] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState('')
+  const [penaltyAnalysisOpen, setPenaltyAnalysisOpen] = useState(false)
+  const [penaltyRecoveryRows, setPenaltyRecoveryRows] = useState([])
+  const [penaltyRecoveryLoading, setPenaltyRecoveryLoading] = useState(false)
+  const [penaltyRecoveryError, setPenaltyRecoveryError] = useState('')
 
   useEffect(() => {
     let isMounted = true
@@ -202,6 +242,31 @@ function BachatCustomerProfilePage() {
     loadHistory({ reset: true })
   }
 
+  const loadPenaltyRecoveryHistory = useCallback(async () => {
+    if (!user || !customerId) return
+
+    setPenaltyRecoveryLoading(true)
+    setPenaltyRecoveryError('')
+    try {
+      const result = await getBachatPenaltyRecoveryHistory({
+        customerId,
+        currentUser: user,
+        pageSize: 50,
+      })
+      setPenaltyRecoveryRows(result.results || [])
+    } catch (error) {
+      setPenaltyRecoveryRows([])
+      setPenaltyRecoveryError(error.message || 'Unable to load penalty recovery history.')
+    } finally {
+      setPenaltyRecoveryLoading(false)
+    }
+  }, [customerId, user])
+
+  const openPenaltyAnalysis = () => {
+    setPenaltyAnalysisOpen(true)
+    loadPenaltyRecoveryHistory()
+  }
+
   const details = useMemo(() => {
     if (!account) return null
     const dailyAmount = moneyValue(account, 'dailyAmount')
@@ -234,6 +299,20 @@ function BachatCustomerProfilePage() {
       closurePreview,
     }
   }, [account])
+
+  const penaltyAnalysis = useMemo(
+    () =>
+      buildBachatPenaltyAnalysis({
+        account: account || {},
+        penalty: latestPenalty || {},
+        recoveryRows: penaltyRecoveryRows,
+      }),
+    [account, latestPenalty, penaltyRecoveryRows],
+  )
+  const hasPenaltyData =
+    Boolean(latestPenalty) ||
+    numberValue(account?.missedMonths) > 0 ||
+    moneyValue(account, 'penaltyAmount') > 0
 
   const profilePhoto = getOptimizedImageUrl(
     customer?.profilePhoto || customer?.profilePhotoUrl || customer?.photoUrl || customer?.photo,
@@ -386,15 +465,45 @@ function BachatCustomerProfilePage() {
 
       <section className="grid gap-4 lg:grid-cols-2">
         <article className="rounded-lg border border-slate-200 p-4">
-          <h3 className="section-title mb-4">Penalties</h3>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="section-title">Penalties</h3>
+            <button
+              type="button"
+              className="btn-secondary !py-1.5"
+              onClick={openPenaltyAnalysis}
+              disabled={!account}
+            >
+              Penalty Analysis
+            </button>
+          </div>
           {penaltyError ? (
             <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{penaltyError}</p>
-          ) : latestPenalty ? (
+          ) : hasPenaltyData ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              <SummaryCard label="Total Penalty Amount" value={formatCurrency(moneyValue(latestPenalty, 'penaltyAmount'))} tone="rose" />
-              <SummaryCard label="Missed Months" value={numberValue(latestPenalty.missedMonths)} tone="amber" />
-              <SummaryCard label="Overdue Days" value={numberValue(latestPenalty.overdueDays)} tone="amber" />
-              <SummaryCard label="Recovery Status" value={latestPenalty.recoveryStatus || 'pending'} tone="cyan" />
+              <SummaryCard
+                label="Total Penalty Amount"
+                value={formatCurrency(penaltyAnalysis.grossPenaltyAmount)}
+                tone="rose"
+                onClick={openPenaltyAnalysis}
+              />
+              <SummaryCard
+                label="Missed Months"
+                value={penaltyAnalysis.missedMonths}
+                tone="amber"
+                onClick={openPenaltyAnalysis}
+              />
+              <SummaryCard
+                label="Overdue Days"
+                value={penaltyAnalysis.overdueDays}
+                tone="amber"
+                onClick={openPenaltyAnalysis}
+              />
+              <SummaryCard
+                label="Recovery Status"
+                value={penaltyAnalysis.recoveryStatus}
+                tone="cyan"
+                onClick={openPenaltyAnalysis}
+              />
             </div>
           ) : (
             <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
@@ -497,6 +606,161 @@ function BachatCustomerProfilePage() {
               </span>
             )}
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={penaltyAnalysisOpen}
+        title="Penalty Analysis"
+        onClose={() => setPenaltyAnalysisOpen(false)}
+        sizeClass="max-w-6xl"
+        panelClass="max-h-[90vh] overflow-y-auto"
+      >
+        <div className="space-y-5">
+          <section>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="section-title">Penalty Summary</h3>
+              <PenaltyStatusPill status={penaltyAnalysis.recoveryStatus} />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <SummaryCard
+                label="Total Penalty Amount"
+                value={formatCurrency(penaltyAnalysis.grossPenaltyAmount)}
+                tone="rose"
+              />
+              <SummaryCard
+                label="Missed Months"
+                value={penaltyAnalysis.missedMonths}
+                tone="amber"
+              />
+              <SummaryCard
+                label="Overdue Days"
+                value={penaltyAnalysis.overdueDays}
+                tone="amber"
+              />
+              <SummaryCard
+                label="Recovery Status"
+                value={penaltyAnalysis.recoveryStatus}
+                tone="cyan"
+              />
+              <SummaryCard
+                label="Pending Recovery"
+                value={formatCurrency(penaltyAnalysis.pendingRecovery)}
+                tone="rose"
+              />
+              <SummaryCard
+                label="Recovered Amount"
+                value={formatCurrency(penaltyAnalysis.recoveredAmount)}
+                tone="emerald"
+              />
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-slate-200 p-4">
+            <h3 className="section-title mb-3">Formula Explanation</h3>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <CompactItem label="Daily Amount" value={formatCurrency(penaltyAnalysis.dailyAmount)} />
+              <CompactItem
+                label="Monthly Amount"
+                value={`${BACHAT_RULES.daysPerMonth} x ${formatCurrency(penaltyAnalysis.dailyAmount)} = ${formatCurrency(penaltyAnalysis.monthlyAmount)}`}
+              />
+              <CompactItem
+                label="Penalty Rate"
+                value={`${penaltyAnalysis.penaltyRatePercent}% of monthly amount`}
+              />
+              <CompactItem
+                label="Monthly Penalty Base"
+                value={`${formatCurrency(penaltyAnalysis.monthlyAmount)} x ${penaltyAnalysis.penaltyRatePercent}% = ${formatCurrency(penaltyAnalysis.penaltyBase)}`}
+              />
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-slate-200">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h3 className="section-title">Month-wise Penalty Breakdown</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Missed Month</th>
+                    <th className="px-4 py-3">Multiplier</th>
+                    <th className="px-4 py-3">Formula</th>
+                    <th className="px-4 py-3">Penalty</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {penaltyAnalysis.breakdown.map((row) => (
+                    <tr key={row.missedIndex}>
+                      <td className="px-4 py-3 font-semibold text-slate-950">{row.missedMonth}</td>
+                      <td className="px-4 py-3 text-slate-700">{row.multiplier}x</td>
+                      <td className="px-4 py-3 text-slate-700">
+                        {formatCurrency(row.baseAmount)} x {row.multiplier}
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-slate-950">
+                        {formatCurrency(row.penaltyAmount)}
+                      </td>
+                    </tr>
+                  ))}
+                  {!penaltyAnalysis.breakdown.length && (
+                    <tr>
+                      <td className="px-4 py-8 text-center text-slate-500" colSpan="4">
+                        No missed months are currently recorded for this account.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+              <h3 className="section-title">Penalty Recovery History</h3>
+              <button
+                type="button"
+                className="btn-secondary !py-1.5"
+                onClick={loadPenaltyRecoveryHistory}
+                disabled={penaltyRecoveryLoading}
+              >
+                {penaltyRecoveryLoading ? 'Loading...' : 'Refresh'}
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Amount Recovered</th>
+                    <th className="px-4 py-3">Collector</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {penaltyRecoveryRows.map((row) => (
+                    <tr key={row.txId || row.id}>
+                      <td className="px-4 py-3 text-slate-700">{formatDate(row.paymentDate || row.date)}</td>
+                      <td className="px-4 py-3 font-semibold text-slate-950">
+                        {formatCurrency(moneyValue(row, 'penaltyRecovered'))}
+                      </td>
+                      <td className="px-4 py-3 text-slate-600">{row.collectorName || '-'}</td>
+                    </tr>
+                  ))}
+                  {!penaltyRecoveryRows.length && !penaltyRecoveryLoading && (
+                    <tr>
+                      <td className="px-4 py-8 text-center text-slate-500" colSpan="3">
+                        No penalty recovery payments found in recent Bachat collections.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {penaltyRecoveryError && (
+              <p className="m-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                {penaltyRecoveryError}
+              </p>
+            )}
+          </section>
         </div>
       </Modal>
     </div>

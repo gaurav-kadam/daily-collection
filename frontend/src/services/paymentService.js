@@ -209,6 +209,25 @@ export const createEmiPayment = async ({ loan, payload, currentUser }) => {
       updatedAt: serverTimestamp(),
     })
     transaction.set(
+      doc(db, COLLECTIONS.loanAccounts, loanData.customerId),
+      {
+        customerId: loanData.customerId,
+        customerName: loanData.customerName || '',
+        shopName: loanData.shopName || '',
+        collectorId: loanData.collectorId || currentUser.userId,
+        collectorName: loanData.collectorName || '',
+        activeLoanId: loanSnapshot.id,
+        remainingBalance: nextBalance,
+        remainingBalancePaise: nextBalancePaise,
+        monthlyEMI: moneyValue(loanData, 'monthlyEMI'),
+        monthlyEMIPaise: moneyToPaise(moneyValue(loanData, 'monthlyEMI')),
+        overdueDays: metricsAfterPayment.overdueDays,
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+    transaction.set(
       doc(db, COLLECTIONS.penalties, `emi_${loanSnapshot.id}`),
       {
         penaltyId: `emi_${loanSnapshot.id}`,

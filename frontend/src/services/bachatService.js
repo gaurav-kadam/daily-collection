@@ -1,6 +1,7 @@
 import {
   arrayUnion,
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -40,9 +41,30 @@ export const BACHAT_RULES = {
   eligibilityMonths: 24,
   daysPerMonth: 30,
   postEligibilityBenefitRate: 0.12,
+  penaltyRate: 0.02,
 }
 
 const DEBUG_BACHAT_PERMISSIONS = import.meta.env.DEV
+
+const customerFinanceCleanupPatch = () => ({
+  dailyAmount: deleteField(),
+  dailyAmountPaise: deleteField(),
+  totalSavings: deleteField(),
+  totalSavingsPaise: deleteField(),
+  pendingAmount: deleteField(),
+  pendingAmountPaise: deleteField(),
+  pendingDays: deleteField(),
+  overdueDays: deleteField(),
+  penaltyAmount: deleteField(),
+  penaltyAmountPaise: deleteField(),
+  totalCollected: deleteField(),
+  totalCollectedPaise: deleteField(),
+  loanStatus: deleteField(),
+  activeLoanId: deleteField(),
+  lastCollectionDate: deleteField(),
+  lastDailySyncDate: deleteField(),
+  lastPenaltyUpdated: deleteField(),
+})
 
 const isPermissionDenied = (error) =>
   error?.code === 'permission-denied' ||
@@ -267,27 +289,84 @@ const customerRef = (customerId) => doc(db, COLLECTIONS.customers, normalizeText
 
 export const calculateProgressiveBachatPenalty = ({
   missedMonths = 0,
-  pendingAmount = 0,
   dailyAmount = 0,
 } = {}) => {
-  const months = Math.max(numberValue(missedMonths), 0)
-  if (!months) return 0
+  return buildBachatPenaltyAnalysis({ account: { dailyAmount, missedMonths } }).grossPenaltyAmount
+}
 
-  const monthlyAmount = normalizeMoney(numberValue(dailyAmount) * BACHAT_RULES.daysPerMonth)
-  let steppedPenalty = 0
+const bachatPenaltyMultiplier = (missedIndex) => Math.max(numberValue(missedIndex) - 1, 1)
 
-  for (let month = 1; month <= months; month += 1) {
-    if (month <= 2) {
-      steppedPenalty += monthlyAmount * 0.005
-    } else if (month <= 6) {
-      steppedPenalty += monthlyAmount * 0.01
-    } else {
-      steppedPenalty += monthlyAmount * 0.015
+export const buildBachatPenaltyAnalysis = ({
+  account = {},
+  penalty = {},
+  recoveryRows = [],
+} = {}) => {
+  const dailyAmount = moneyValue(account, 'dailyAmount')
+  const monthlyAmount =
+    moneyValue(account, 'monthlyAmount') || normalizeMoney(dailyAmount * BACHAT_RULES.daysPerMonth)
+  const penaltyBase = normalizeMoney(monthlyAmount * BACHAT_RULES.penaltyRate)
+  const missedMonths = Math.max(
+    numberValue(penalty?.missedMonths, numberValue(account?.missedMonths)),
+    0,
+  )
+  const paidMonths = Math.max(numberValue(account?.paidMonths), 0)
+  const overdueDays = Math.max(
+    numberValue(penalty?.overdueDays, numberValue(account?.overdueDays)),
+    missedMonths * BACHAT_RULES.daysPerMonth,
+  )
+  const breakdown = Array.from({ length: Math.round(missedMonths) }).map((_, index) => {
+    const missedIndex = index + 1
+    const multiplier = bachatPenaltyMultiplier(missedIndex)
+    const penaltyAmount = normalizeMoney(penaltyBase * multiplier)
+
+    return {
+      missedIndex,
+      missedMonth: paidMonths + missedIndex,
+      multiplier,
+      baseAmount: penaltyBase,
+      formula: `${penaltyBase} x ${multiplier}`,
+      penaltyAmount,
     }
-  }
+  })
+  const grossPenaltyAmount = normalizeMoney(
+    breakdown.reduce((sum, item) => sum + item.penaltyAmount, 0),
+  )
+  const recoveredFromRows = normalizeMoney(
+    recoveryRows.reduce((sum, item) => sum + moneyValue(item, 'penaltyRecovered'), 0),
+  )
+  const pendingPenaltyAmount = Math.max(
+    moneyValue(account, 'penaltyAmount') || moneyValue(penalty, 'penaltyAmount'),
+    0,
+  )
+  const recoveredFromBalance = Math.max(grossPenaltyAmount - pendingPenaltyAmount, 0)
+  const recoveredAmount = normalizeMoney(Math.max(recoveredFromRows, recoveredFromBalance))
+  const pendingRecovery = normalizeMoney(Math.max(grossPenaltyAmount - recoveredAmount, 0))
+  const storedRecoveryStatus = normalizeText(penalty?.recoveryStatus).toLowerCase()
+  const recoveryStatus =
+    storedRecoveryStatus === 'waived'
+      ? 'waived'
+      : grossPenaltyAmount <= 0
+        ? 'recovered'
+        : pendingRecovery <= 0
+          ? 'recovered'
+          : recoveredAmount > 0
+            ? 'partial'
+            : 'pending'
 
-  const exposurePenalty = numberValue(pendingAmount) * 0.003
-  return normalizeMoney(steppedPenalty + exposurePenalty)
+  return {
+    dailyAmount,
+    monthlyAmount,
+    penaltyRate: BACHAT_RULES.penaltyRate,
+    penaltyRatePercent: BACHAT_RULES.penaltyRate * 100,
+    penaltyBase,
+    missedMonths,
+    overdueDays,
+    breakdown,
+    grossPenaltyAmount,
+    recoveredAmount,
+    pendingRecovery,
+    recoveryStatus,
+  }
 }
 
 export const computeBachatClosurePreview = (account, asOfDate = todayKey()) => {
@@ -449,6 +528,27 @@ export const getBachatCollectionsByCustomer = async ({
       error,
     })
     throw error
+  }
+}
+
+export const getBachatPenaltyRecoveryHistory = async ({
+  customerId,
+  currentUser,
+  pageSize = 50,
+} = {}) => {
+  const response = await getBachatCollectionsByCustomer({
+    customerId,
+    currentUser,
+    pageSize: pageLimit(pageSize, 50, 50),
+  })
+
+  const results = (response.results || []).filter(
+    (record) => moneyValue(record, 'penaltyRecovered') > 0,
+  )
+
+  return {
+    results,
+    count: results.length,
   }
 }
 
@@ -816,6 +916,7 @@ export const getBachatEnrollmentStatus = async ({
   if (!customerSnapshot.data()?.moduleFlags) {
     updateDoc(customerReference, {
       moduleFlags: customer.moduleFlags,
+      ...customerFinanceCleanupPatch(),
       updatedAt: serverTimestamp(),
     }).catch(() => {})
   }
@@ -834,6 +935,7 @@ export const getBachatEnrollmentStatus = async ({
   if (account && !hasBachatFlag) {
     updateDoc(customerReference, {
       moduleFlags: buildModuleFlags(customer.moduleFlags, { bachat: true }),
+      ...customerFinanceCleanupPatch(),
       updatedAt: serverTimestamp(),
     }).catch(() => {})
   }
@@ -967,6 +1069,7 @@ export const enrollCustomerToBachat = async ({
         customerReference,
         {
           moduleFlags: nextModuleFlags,
+          ...customerFinanceCleanupPatch(),
           updatedAt: serverTimestamp(),
         },
         { merge: true },
@@ -1082,6 +1185,8 @@ export const applyBachatCollectionV2InTransaction = async ({
   const nextPenaltyAmount = paiseToMoney(nextPenaltyPaise)
   const penaltyRecovered = paiseToMoney(effectivePenaltyRecoveredPaise)
   const penaltyRecoveredPaiseValue = effectivePenaltyRecoveredPaise
+  const recoveryStatus =
+    nextPenaltyPaise <= 0 ? 'recovered' : effectivePenaltyRecoveredPaise > 0 ? 'partial' : 'pending'
   const penaltyDeltaPaise = nextPenaltyPaise - currentPenaltyPaise
   const missedPaymentsDelta =
     previousMissedMonths <= 0 && missedMonths > 0
@@ -1160,7 +1265,7 @@ export const applyBachatCollectionV2InTransaction = async ({
       penaltyAmountPaise: nextPenaltyPaise,
       recoveredPenalty: penaltyRecovered,
       recoveredPenaltyPaise: penaltyRecoveredPaiseValue,
-      recoveryStatus: nextPendingPaise > 0 ? 'pending' : 'recovered',
+      recoveryStatus,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     })
@@ -1353,12 +1458,14 @@ export const createBachatCollection = async ({
 export default {
   BACHAT_RULES,
   calculateProgressiveBachatPenalty,
+  buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
   listenBachatSummary,
   getBachatAccount,
   listenBachatAccount,
   getBachatEnrollmentStatus,
   getBachatCollectionsByCustomer,
+  getBachatPenaltyRecoveryHistory,
   listenRecentBachatCollections,
   listenBachatPenaltiesByCustomer,
   listenBachatClosuresByCustomer,

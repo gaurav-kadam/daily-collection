@@ -3,12 +3,11 @@ import toast from 'react-hot-toast'
 import { FiCheckCircle, FiPlus } from 'react-icons/fi'
 import Loader from '../components/Loader'
 import useAuth from '../hooks/useAuth'
-import { getActiveBachatAccounts } from '../services/bachatService'
 import {
   createDailyCollection,
+  getActiveDailyCollectionAccounts,
   listenDailyCollections,
 } from '../services/collectionService'
-import customerService from '../services/customerService'
 import { moneyValue, numberValue, todayKey } from '../services/firestoreService'
 import { formatCurrency } from '../utils/format'
 
@@ -34,14 +33,11 @@ function DailyCollectionPage() {
     if (!user) return undefined
 
     let isMounted = true
-    Promise.all([
-      customerService.getAll({ currentUser: user, status: 'active', pageSize: 300 }),
-      getActiveBachatAccounts({ currentUser: user, pageSize: 500 }),
-    ])
-      .then(([customerData, accountData]) => {
+    getActiveDailyCollectionAccounts({ currentUser: user, pageSize: 500 })
+      .then((accountData) => {
         if (!isMounted) return
-        setCustomers(customerData.results || [])
         setAccounts(accountData.results || [])
+        setCustomers(accountData.results || [])
       })
       .catch((error) => toast.error(error.message))
 

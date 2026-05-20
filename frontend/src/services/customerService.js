@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -20,8 +21,6 @@ import {
   USER_ROLES,
   docsWithIds,
   makeSearchKeywords,
-  moneyToPaise,
-  normalizeMoney,
   normalizeSearchText,
   normalizeText,
   pageLimit,
@@ -47,6 +46,26 @@ const debugFirestoreWrite = (step, details = {}) => {
 const withModuleFlags = (customer = {}) => ({
   ...customer,
   moduleFlags: buildModuleFlags(customer.moduleFlags),
+})
+
+const customerFinanceCleanupPatch = () => ({
+  dailyAmount: deleteField(),
+  dailyAmountPaise: deleteField(),
+  totalSavings: deleteField(),
+  totalSavingsPaise: deleteField(),
+  pendingAmount: deleteField(),
+  pendingAmountPaise: deleteField(),
+  pendingDays: deleteField(),
+  overdueDays: deleteField(),
+  penaltyAmount: deleteField(),
+  penaltyAmountPaise: deleteField(),
+  totalCollected: deleteField(),
+  totalCollectedPaise: deleteField(),
+  loanStatus: deleteField(),
+  activeLoanId: deleteField(),
+  lastCollectionDate: deleteField(),
+  lastDailySyncDate: deleteField(),
+  lastPenaltyUpdated: deleteField(),
 })
 
 const debugCurrentRuleProfile = async (currentUser) => {
@@ -165,8 +184,6 @@ export const listenCollectors = (callback, onError) =>
 
 export const createCustomer = async (payload, currentUser) => {
   const customerReference = payload.customerReference || doc(customersRef)
-  const dailyAmountPaise = moneyToPaise(payload.dailyAmount)
-  const dailyAmount = normalizeMoney(payload.dailyAmount)
   const profilePhotoUrl = normalizeText(
     payload.profilePhotoUrl || payload.photoUrl || payload.photo,
   )
@@ -179,39 +196,36 @@ export const createCustomer = async (payload, currentUser) => {
   const fullName = normalizeText(payload.fullName || ownerName)
   const idType = normalizeText(payload.idProofType || payload.kyc?.idType)
   const idNumber = normalizeText(payload.idProofNumber || payload.kyc?.idNumber)
+  const aadhaarNumber = normalizeText(payload.aadhaarNumber || (idType === 'Aadhaar' ? idNumber : ''))
+  const panNumber = normalizeText(payload.panNumber || (idType === 'PAN' ? idNumber : ''))
 
   const record = {
     customerId: customerReference.id,
     fullName,
+    mobile,
+    alternateMobile,
+    address: normalizeText(payload.address),
+    aadhaarNumber,
+    panNumber,
+    gender: normalizeText(payload.gender),
+    dateOfBirth: normalizeText(payload.dateOfBirth),
+    occupation: normalizeText(payload.occupation),
+    profilePhotoUrl,
+    documentPhotoUrl,
     shopName,
     shopNameLower: normalizeSearchText(shopName),
     ownerName,
     ownerNameLower: normalizeSearchText(ownerName),
-    mobile,
     mobileSearch: normalizeSearchText(mobile),
-    alternateMobile,
     alternateMobileSearch: normalizeSearchText(alternateMobile),
     area,
     areaLower: normalizeSearchText(area),
-    address: normalizeText(payload.address),
     kyc: {
       idType,
       idNumber,
     },
     profilePhoto: profilePhotoUrl,
     documentPhoto: documentPhotoUrl,
-    dailyAmount,
-    dailyAmountPaise,
-    totalSavings: 0,
-    totalSavingsPaise: 0,
-    pendingAmount: 0,
-    pendingAmountPaise: 0,
-    pendingDays: 0,
-    overdueDays: 0,
-    penaltyAmount: 0,
-    penaltyAmountPaise: 0,
-    lastPenaltyUpdated: null,
-    lastDailySyncDate: payload.joiningDate || null,
     assignedCollectorId: normalizeText(payload.assignedCollectorId),
     assignedCollectorName: normalizeText(payload.assignedCollectorName),
     status: payload.status || 'active',
@@ -219,8 +233,6 @@ export const createCustomer = async (payload, currentUser) => {
     idProofType: normalizeText(payload.idProofType),
     idProofNumber: normalizeText(payload.idProofNumber),
     notes: normalizeText(payload.notes),
-    profilePhotoUrl,
-    documentPhotoUrl,
     photoUrl: profilePhotoUrl,
     photo: profilePhotoUrl,
     moduleFlags: buildModuleFlags(payload.moduleFlags),
@@ -231,6 +243,7 @@ export const createCustomer = async (payload, currentUser) => {
       mobile,
       alternateMobile,
       area,
+      customerReference.id,
     ),
     createdById: currentUser?.userId || auth.currentUser?.uid || '',
     createdAt: serverTimestamp(),
@@ -354,6 +367,7 @@ export const getById = async (customerId) => {
     if (!snapshot.data()?.moduleFlags) {
       updateDoc(doc(db, COLLECTIONS.customers, snapshot.id), {
         moduleFlags: customer.moduleFlags,
+        ...customerFinanceCleanupPatch(),
         updatedAt: serverTimestamp(),
       }).catch(() => {})
     }
@@ -371,6 +385,7 @@ export const getById = async (customerId) => {
   if (!match.data()?.moduleFlags) {
     updateDoc(doc(db, COLLECTIONS.customers, match.id), {
       moduleFlags: customer.moduleFlags,
+      ...customerFinanceCleanupPatch(),
       updatedAt: serverTimestamp(),
     }).catch(() => {})
   }
@@ -460,31 +475,36 @@ export const create = async (payload, currentUser, { onUploadProgress } = {}) =>
 }
 
 export const update = async (customerId, payload, _currentUser, { onUploadProgress } = {}) => {
-  const dailyAmount = normalizeMoney(payload.dailyAmount)
   const shopName = normalizeText(payload.shopName)
   const ownerName = normalizeText(payload.ownerName)
   const mobile = normalizeText(payload.mobile)
   const alternateMobile = normalizeText(payload.alternateMobile)
   const area = normalizeText(payload.area)
+  const idType = normalizeText(payload.idProofType || payload.kyc?.idType)
+  const idNumber = normalizeText(payload.idProofNumber || payload.kyc?.idNumber)
+  const fullName = normalizeText(payload.fullName || ownerName)
   const updates = {
-    fullName: normalizeText(payload.fullName || ownerName),
+    fullName,
+    mobile,
+    alternateMobile,
+    address: normalizeText(payload.address),
+    aadhaarNumber: normalizeText(payload.aadhaarNumber || (idType === 'Aadhaar' ? idNumber : '')),
+    panNumber: normalizeText(payload.panNumber || (idType === 'PAN' ? idNumber : '')),
+    gender: normalizeText(payload.gender),
+    dateOfBirth: normalizeText(payload.dateOfBirth),
+    occupation: normalizeText(payload.occupation),
     shopName,
     shopNameLower: normalizeSearchText(shopName),
     ownerName,
     ownerNameLower: normalizeSearchText(ownerName),
-    mobile,
     mobileSearch: normalizeSearchText(mobile),
-    alternateMobile,
     alternateMobileSearch: normalizeSearchText(alternateMobile),
     area,
     areaLower: normalizeSearchText(area),
-    address: normalizeText(payload.address),
     kyc: {
-      idType: normalizeText(payload.idProofType || payload.kyc?.idType),
-      idNumber: normalizeText(payload.idProofNumber || payload.kyc?.idNumber),
+      idType,
+      idNumber,
     },
-    dailyAmount,
-    dailyAmountPaise: moneyToPaise(payload.dailyAmount),
     assignedCollectorId: normalizeText(payload.assignedCollectorId),
     assignedCollectorName: normalizeText(payload.assignedCollectorName),
     status: payload.status || 'active',
@@ -493,13 +513,31 @@ export const update = async (customerId, payload, _currentUser, { onUploadProgre
     idProofNumber: normalizeText(payload.idProofNumber),
     notes: normalizeText(payload.notes),
     searchKeywords: makeSearchKeywords(
-      normalizeText(payload.fullName || ownerName),
+      fullName,
       shopName,
       ownerName,
       mobile,
       alternateMobile,
       area,
+      customerId,
     ),
+    dailyAmount: deleteField(),
+    dailyAmountPaise: deleteField(),
+    totalSavings: deleteField(),
+    totalSavingsPaise: deleteField(),
+    pendingAmount: deleteField(),
+    pendingAmountPaise: deleteField(),
+    pendingDays: deleteField(),
+    overdueDays: deleteField(),
+    penaltyAmount: deleteField(),
+    penaltyAmountPaise: deleteField(),
+    totalCollected: deleteField(),
+    totalCollectedPaise: deleteField(),
+    loanStatus: deleteField(),
+    activeLoanId: deleteField(),
+    lastPenaltyUpdated: deleteField(),
+    lastDailySyncDate: deleteField(),
+    lastCollectionDate: deleteField(),
     updatedAt: serverTimestamp(),
   }
 

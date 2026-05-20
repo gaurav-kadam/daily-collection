@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -14,10 +15,10 @@ import {
 } from 'firebase/firestore'
 import { auth, db } from '../firebase/firebase'
 import {
+  buildModuleFlags,
   COLLECTIONS,
   FINANCE_RULES,
   USER_ROLES,
-  addDaysKey,
   daysBetween,
   docsWithIds,
   moneyToPaise,
@@ -28,10 +29,9 @@ import {
   paiseToMoney,
   todayKey,
 } from './firestoreService'
-import { applyBachatCollectionV2InTransaction } from './bachatService'
 
 const collectionsRef = collection(db, COLLECTIONS.dailyCollections)
-const customersRef = collection(db, COLLECTIONS.customers)
+const dailyAccountsRef = collection(db, COLLECTIONS.dailyCollectionAccounts)
 
 export const collectionDocumentId = (customerId, date) => `${customerId}_${date}`
 
@@ -80,6 +80,127 @@ const sortCollectionsDesc = (records) =>
       String(first.date || first.collection_date || ''),
     ),
   )
+
+const scopedDailyAccountConstraints = (currentUser) =>
+  currentUser?.role === USER_ROLES.collector
+    ? [where('collectorId', '==', currentUser.userId), where('status', '==', 'active'), orderBy('updatedAt', 'desc')]
+    : [where('status', '==', 'active'), orderBy('updatedAt', 'desc')]
+
+export const getActiveDailyCollectionAccounts = async ({
+  currentUser,
+  pageSize = 500,
+} = {}) => {
+  const snapshot = await getDocs(
+    query(
+      dailyAccountsRef,
+      ...scopedDailyAccountConstraints(currentUser),
+      limit(pageLimit(pageSize, 200, 500)),
+    ),
+  )
+
+  return {
+    results: docsWithIds(snapshot),
+    count: snapshot.size,
+  }
+}
+
+export const getDailyCollectionAccount = async (customerId) => {
+  const normalizedId = normalizeText(customerId)
+  if (!normalizedId) return null
+
+  const snapshot = await getDoc(doc(db, COLLECTIONS.dailyCollectionAccounts, normalizedId))
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null
+}
+
+export const enrollDailyCollectionAccount = async ({
+  customer,
+  payload = {},
+  currentUser,
+} = {}) => {
+  const customerId = normalizeText(customer?.customerId || customer?.id || payload.customerId)
+  if (!customerId) throw new Error('Customer ID is required.')
+
+  const dailyAmount = paiseToMoney(moneyToPaise(payload.dailyAmount))
+  if (dailyAmount <= 0) throw new Error('Daily collection amount must be greater than zero.')
+
+  const customerReference = doc(db, COLLECTIONS.customers, customerId)
+  const accountReference = doc(db, COLLECTIONS.dailyCollectionAccounts, customerId)
+
+  await runTransaction(db, async (transaction) => {
+    const [customerSnapshot, accountSnapshot] = await Promise.all([
+      transaction.get(customerReference),
+      transaction.get(accountReference),
+    ])
+    if (!customerSnapshot.exists()) throw new Error('Customer record was not found.')
+    if (accountSnapshot.exists()) throw new Error('Customer is already enrolled in Daily Collection.')
+
+    const customerData = customerSnapshot.data()
+    const collectorId = normalizeText(
+      payload.collectorId || customerData.assignedCollectorId || currentUser?.userId,
+    )
+    const collectorName = normalizeText(
+      payload.collectorName ||
+        customerData.assignedCollectorName ||
+        currentUser?.fullName ||
+        currentUser?.email,
+    )
+
+    transaction.set(accountReference, {
+      customerId,
+      fullName: normalizeText(customerData.fullName || customerData.ownerName),
+      customerName: normalizeText(customerData.fullName || customerData.ownerName),
+      shopName: normalizeText(customerData.shopName),
+      mobile: normalizeText(customerData.mobile),
+      dailyAmount,
+      dailyAmountPaise: moneyToPaise(dailyAmount),
+      totalCollected: 0,
+      totalCollectedPaise: 0,
+      pendingAmount: 0,
+      pendingAmountPaise: 0,
+      pendingDays: 0,
+      overdueDays: 0,
+      penaltyAmount: 0,
+      penaltyAmountPaise: 0,
+      lastCollectionDate: null,
+      lastDailySyncDate: payload.startDate || todayKey(),
+      lastPenaltyUpdated: null,
+      collectorId,
+      collectorName,
+      status: 'active',
+      createdById: currentUser?.userId || '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+    transaction.set(
+      customerReference,
+      {
+        moduleFlags: buildModuleFlags(customerData.moduleFlags, { dailyCollection: true }),
+        dailyAmount: deleteField(),
+        dailyAmountPaise: deleteField(),
+        totalSavings: deleteField(),
+        totalSavingsPaise: deleteField(),
+        pendingAmount: deleteField(),
+        pendingAmountPaise: deleteField(),
+        pendingDays: deleteField(),
+        overdueDays: deleteField(),
+        penaltyAmount: deleteField(),
+        penaltyAmountPaise: deleteField(),
+        totalCollected: deleteField(),
+        totalCollectedPaise: deleteField(),
+        loanStatus: deleteField(),
+        activeLoanId: deleteField(),
+        lastCollectionDate: deleteField(),
+        lastDailySyncDate: deleteField(),
+        lastPenaltyUpdated: deleteField(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+  })
+
+  const snapshot = await getDoc(accountReference)
+  return { id: snapshot.id, ...snapshot.data() }
+}
 
 const getCollectionsForCustomerId = async ({ customerId, currentUser, pageSize }) => {
   const constraints = []
@@ -168,7 +289,7 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
   const date = payload.date || todayKey()
   const collectionId = collectionDocumentId(customer.customerId || customer.id, date)
   const collectionReference = doc(db, COLLECTIONS.dailyCollections, collectionId)
-  const customerReference = doc(db, COLLECTIONS.customers, customer.customerId || customer.id)
+  const accountReference = doc(db, COLLECTIONS.dailyCollectionAccounts, customer.customerId || customer.id)
   const expectedAmountPaise = moneyToPaise(moneyValue(customer, 'dailyAmount'))
   const amountCollectedPaise = moneyToPaise(payload.amountCollected)
   const pendingRecoveredPaise = Math.min(
@@ -194,13 +315,13 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
       throw new Error('Collection for this customer already exists for selected date.')
     }
 
-    const customerSnapshot = await transaction.get(customerReference)
-    if (!customerSnapshot.exists()) {
-      throw new Error('Customer record was not found.')
+    const accountSnapshot = await transaction.get(accountReference)
+    if (!accountSnapshot.exists()) {
+      throw new Error('Daily Collection account was not found for this customer.')
     }
 
-    const customerData = customerSnapshot.data()
-    const currentPendingPaise = moneyToPaise(moneyValue(customerData, 'pendingAmount'))
+    const accountData = accountSnapshot.data()
+    const currentPendingPaise = moneyToPaise(moneyValue(accountData, 'pendingAmount'))
     const nextPendingAmountPaise = Math.max(
       currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
       0,
@@ -210,17 +331,17 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
       nextPendingAmountPaise === 0
         ? 0
         : Math.max(
-            numberValue(customerData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
+            numberValue(accountData.pendingDays) + (pendingCreatedPaise > 0 ? 1 : 0),
             0,
           )
     const dailyPenaltyPaise = moneyToPaise(nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay)
 
     const collectorId =
       currentUser.role === USER_ROLES.admin
-        ? customerData.assignedCollectorId || currentUser.userId
+        ? accountData.collectorId || currentUser.userId
         : currentUser.userId
     const collectorName =
-      customerData.assignedCollectorName ||
+      accountData.collectorName ||
       currentUser.fullName ||
       currentUser.email ||
       ''
@@ -229,9 +350,9 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
 
     const record = {
       collectionId,
-      customerId: customerSnapshot.id,
-      customerName: customerData.ownerName || '',
-      shopName: customerData.shopName || '',
+      customerId: accountSnapshot.id,
+      customerName: accountData.customerName || accountData.fullName || '',
+      shopName: accountData.shopName || '',
       collectorId,
       collectorName,
       expectedAmount,
@@ -258,19 +379,19 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
 
     const summaryReference = doc(
       db,
-      COLLECTIONS.dailySummaries,
+      COLLECTIONS.dailyCollectionSummary,
       dailySummaryDocumentId(date, collectorId),
     )
     const penaltyReference = doc(
       db,
       COLLECTIONS.penalties,
-      `daily_${customerSnapshot.id}`,
+      `daily_${accountSnapshot.id}`,
     )
 
       transaction.set(collectionReference, record)
-      transaction.update(customerReference, {
-        totalSavings: increment(totalReceived),
-        totalSavingsPaise: increment(totalReceivedPaise),
+      transaction.update(accountReference, {
+        totalCollected: increment(totalReceived),
+        totalCollectedPaise: increment(totalReceivedPaise),
         pendingAmount: nextPendingAmount,
         pendingAmountPaise: nextPendingAmountPaise,
         pendingDays: nextPendingDays,
@@ -311,9 +432,9 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
           penaltyId: penaltyReference.id,
           type: 'daily',
           status: nextPendingAmountPaise > 0 ? 'active' : 'resolved',
-          customerId: customerSnapshot.id,
-          customerName: customerData.ownerName || '',
-          shopName: customerData.shopName || '',
+          customerId: accountSnapshot.id,
+          customerName: accountData.customerName || accountData.fullName || '',
+          shopName: accountData.shopName || '',
           collectorId,
           collectorName,
           overdueDays: nextPendingDays,
@@ -327,20 +448,6 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
         { merge: true },
       )
 
-      await applyBachatCollectionV2InTransaction({
-        transaction,
-        customerId: customerSnapshot.id,
-        customerData,
-        currentUser,
-        date,
-        paymentMethod: payload.paymentMethod || 'cash',
-        remarks: payload.remarks,
-        amountCollectedPaise,
-        pendingRecoveredPaise,
-        pendingCreatedPaise,
-        totalReceivedPaise,
-        status,
-      })
     })
   } catch (error) {
     debugCollectionPermission({
@@ -350,13 +457,9 @@ export const createDailyCollection = async ({ customer, payload, currentUser }) 
       currentUser,
       transactionPaths: [
         collectionReference.path,
-        customerReference.path,
-        `${COLLECTIONS.dailySummaries}/${dailySummaryDocumentId(date, currentUser?.userId)}`,
+        accountReference.path,
+        `${COLLECTIONS.dailyCollectionSummary}/${dailySummaryDocumentId(date, currentUser?.userId)}`,
         `${COLLECTIONS.penalties}/daily_${customer.customerId || customer.id}`,
-        `${COLLECTIONS.bachatAccounts}/${customer.customerId || customer.id}`,
-        COLLECTIONS.bachatCollections,
-        `${COLLECTIONS.bachatSummary}/main`,
-        `${COLLECTIONS.customerFinancials}/${customer.customerId || customer.id}`,
       ],
       error,
     })
@@ -417,42 +520,38 @@ export const getToday = async ({ date = todayKey(), currentUser } = {}) => {
 }
 
 export const getPending = async ({ pageSize = 100, date = todayKey(), currentUser } = {}) => {
-  const customerConstraints =
-    currentUser?.role === USER_ROLES.collector
-      ? [
-          where('assignedCollectorId', '==', currentUser.userId),
-          where('status', '==', 'active'),
-          orderBy('shopName'),
-        ]
-      : [where('status', '==', 'active'), orderBy('shopName')]
   const collectionConstraints =
     currentUser?.role === USER_ROLES.collector
       ? [where('collectorId', '==', currentUser.userId), where('date', '==', date)]
       : [where('date', '==', date)]
 
-  const [customerSnapshot, collectionSnapshot] = await Promise.all([
-    getDocs(query(customersRef, ...customerConstraints, limit(pageLimit(pageSize, 100, 500)))),
+  const [accountSnapshot, collectionSnapshot] = await Promise.all([
+    getDocs(
+      query(
+        dailyAccountsRef,
+        ...scopedDailyAccountConstraints(currentUser),
+        limit(pageLimit(pageSize, 100, 500)),
+      ),
+    ),
     getDocs(query(collectionsRef, ...collectionConstraints)),
   ])
   const collectedCustomerIds = new Set(
     docsWithIds(collectionSnapshot).map((collectionRecord) => collectionRecord.customerId),
   )
-  const yesterday = addDaysKey(date, -1)
-  const results = docsWithIds(customerSnapshot)
-    .filter((customer) => !collectedCustomerIds.has(customer.customerId || customer.id))
-    .map((customer) => ({
-      ...customer,
-      customerName: customer.ownerName,
-      collectorName: customer.assignedCollectorName,
+  const results = docsWithIds(accountSnapshot)
+    .filter((account) => !collectedCustomerIds.has(account.customerId || account.id))
+    .map((account) => ({
+      ...account,
+      customerName: account.customerName || account.fullName,
       pendingAmount:
-        moneyValue(customer, 'pendingAmount') +
-        (customer.lastCollectionDate && customer.lastCollectionDate < date
-          ? moneyValue(customer, 'dailyAmount')
+        moneyValue(account, 'pendingAmount') +
+        (account.lastCollectionDate && account.lastCollectionDate < date
+          ? moneyValue(account, 'dailyAmount')
           : 0),
       pendingDays:
-        numberValue(customer.pendingDays) +
-        (customer.lastCollectionDate && customer.lastCollectionDate <= yesterday ? 1 : 0),
-      lastPaymentDate: customer.lastCollectionDate || '',
+        numberValue(account.pendingDays) +
+        (account.lastCollectionDate && account.lastCollectionDate < date ? 1 : 0),
+      lastPaymentDate: account.lastCollectionDate || '',
     }))
 
   return {
@@ -463,15 +562,15 @@ export const getPending = async ({ pageSize = 100, date = todayKey(), currentUse
 
 export const create = async (payload, currentUser) => {
   const customerId = payload.customerId || payload.customer_id
-  const customerSnapshot = await getDoc(doc(db, COLLECTIONS.customers, customerId))
-  if (!customerSnapshot.exists()) throw new Error('Customer record was not found.')
-  const customer = { id: customerSnapshot.id, ...customerSnapshot.data() }
-  const expectedAmount = moneyValue(customer, 'dailyAmount')
+  const accountSnapshot = await getDoc(doc(db, COLLECTIONS.dailyCollectionAccounts, customerId))
+  if (!accountSnapshot.exists()) throw new Error('Daily Collection account was not found.')
+  const account = { id: accountSnapshot.id, ...accountSnapshot.data() }
+  const expectedAmount = moneyValue(account, 'dailyAmount')
   const receivedAmount = numberValue(payload.amount)
   const isMissed = ['pending', 'missed'].includes(payload.status)
 
   return createDailyCollection({
-    customer,
+    customer: account,
     payload: {
       date: payload.date || todayKey(),
       amountCollected: isMissed ? 0 : Math.min(receivedAmount, expectedAmount),
@@ -484,6 +583,9 @@ export const create = async (payload, currentUser) => {
 }
 
 export default {
+  getActiveDailyCollectionAccounts,
+  getDailyCollectionAccount,
+  enrollDailyCollectionAccount,
   listenDailyCollections,
   listenCollectionHistory,
   createDailyCollection,

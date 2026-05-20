@@ -44,7 +44,10 @@ function AppRouter() {
               <Route path="/customers" element={<CustomersPage />} />
               <Route path="/my-customers" element={<CustomersPage />} />
               <Route path="/customers/:customerId" element={<CustomerDetailsPage />} />
+              <Route path="/bachat/dashboard" element={<ModuleDashboardPage moduleOverride="bachat" />} />
+              <Route path="/bachat/enroll" element={<ModuleDashboardPage moduleOverride="bachat" openEnroll />} />
               <Route path="/bachat/profile/:customerId" element={<BachatCustomerProfilePage />} />
+              <Route path="/bachat/collections" element={<BachatCollectionPage />} />
               <Route path="/bachat/collect" element={<BachatCollectionPage />} />
               <Route path="/collections" element={<DailyCollectionPage />} />
               <Route path="/collections/today" element={<TodayCollectionSummaryPage />} />

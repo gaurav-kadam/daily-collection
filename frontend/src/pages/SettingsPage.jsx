@@ -3,6 +3,8 @@ import useAuth from '../hooks/useAuth'
 const collections = [
   'users',
   'customers',
+  'dailyCollectionAccounts',
+  'dailyCollectionSummary',
   'bachatAccounts',
   'bachatCollections',
   'bachatPenalties',
@@ -10,6 +12,8 @@ const collections = [
   'bachatSummary',
   'customerFinancials',
   'dailyCollections',
+  'loanAccounts',
+  'loanSummary',
   'loans',
   'emiPayments',
   'notifications',

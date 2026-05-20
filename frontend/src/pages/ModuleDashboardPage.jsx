@@ -1,20 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
-import {
+  FiActivity,
   FiAlertTriangle,
   FiArrowLeft,
-  FiBarChart2,
   FiBriefcase,
   FiCalendar,
   FiClock,
@@ -133,21 +122,18 @@ const baseStats = {
 
 const clampPercent = (value) => Math.max(Math.min(Number(value || 0), 100), 0)
 
-function MoneyTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null
+function FinanceRow({ label, value, currency = true }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-soft">
-      <p className="font-semibold text-slate-900">{label}</p>
-      {payload.map((item) => (
-        <p key={item.dataKey} className="text-slate-600">
-          {item.name || item.dataKey}: {formatCurrency(item.value)}
-        </p>
-      ))}
+    <div className="flex items-center justify-between gap-4 rounded-lg bg-slate-50 px-3 py-2">
+      <span className="text-sm text-slate-600">{label}</span>
+      <span className="font-semibold text-slate-950">
+        {currency ? formatCurrency(value) : value}
+      </span>
     </div>
   )
 }
 
-function MetricTile({ label, value, currency = false, icon: Icon = FiBarChart2 }) {
+function MetricTile({ label, value, currency = false, icon: Icon = FiActivity }) {
   return (
     <article className="card p-4">
       <div className="flex items-start justify-between gap-3">
@@ -167,7 +153,7 @@ function MetricTile({ label, value, currency = false, icon: Icon = FiBarChart2 }
 
 function getModuleMetrics(moduleId, stats, moduleSummary) {
   const defaults = [
-    { label: 'Total Amount', value: moduleSummary?.amount || 0, currency: true, icon: FiBarChart2 },
+    { label: 'Total Amount', value: moduleSummary?.amount || 0, currency: true, icon: FiActivity },
     { label: 'Accounts', value: moduleSummary?.accounts || 0, icon: FiUsers },
     { label: 'Active', value: moduleSummary?.active || 0, icon: FiTrendingUp },
     { label: 'Pending / Due', value: moduleSummary?.pending || 0, currency: true, icon: FiAlertTriangle },
@@ -193,7 +179,7 @@ function getModuleMetrics(moduleId, stats, moduleSummary) {
       { label: 'EMI Collection', value: stats.todayEmiCollection, currency: true, icon: MdOutlinePayments },
       { label: 'Overdue', value: stats.emiOverdueAmount, currency: true, icon: FiAlertTriangle },
       { label: 'Penalties', value: stats.penaltyAmount, currency: true, icon: FiAlertTriangle },
-      { label: 'Collector Performance', value: stats.collectorPerformance.length, icon: FiUsers },
+      { label: 'Active Collectors', value: stats.collectorPerformance.length, icon: FiUsers },
       { label: 'Active Loans', value: stats.activeLoans, icon: FiTrendingUp },
     ],
     fd: [
@@ -211,7 +197,7 @@ function getModuleMetrics(moduleId, stats, moduleSummary) {
     expenses: [
       { label: 'Operational Expenses', value: stats.monthlyExpenses, currency: true, icon: FiTrendingDown },
       { label: 'Salaries / Withdrawals', value: stats.totalWithdrawals, currency: true, icon: FiUsers },
-      { label: 'Monthly Reports', value: stats.profitLossMtd, currency: true, icon: FiBarChart2 },
+      { label: 'Monthly Reports', value: stats.profitLossMtd, currency: true, icon: FiActivity },
       { label: 'Today Expenses', value: stats.todayExpenses, currency: true, icon: FiClock },
     ],
     bishi: [
@@ -224,7 +210,7 @@ function getModuleMetrics(moduleId, stats, moduleSummary) {
       { label: 'Land Investments', value: stats.totalInvestments, currency: true, icon: FiBriefcase },
       { label: 'Asset Value', value: moduleSummary?.amount || 0, currency: true, icon: FiDatabase },
       { label: 'Growth %', value: `${Math.round(clampPercent(moduleSummary?.progress))}%`, icon: FiTrendingUp },
-      { label: 'ROI', value: stats.profitLossMtd, currency: true, icon: FiBarChart2 },
+      { label: 'ROI', value: stats.profitLossMtd, currency: true, icon: FiActivity },
       { label: 'Categories', value: moduleSummary?.accounts || 0, icon: FiLayers },
     ],
   }
@@ -302,7 +288,7 @@ const createInsightModalState = (overrides = {}) => ({
   ...overrides,
 })
 
-function BachatDashboardView({ user }) {
+function BachatDashboardView({ user, openEnroll = false }) {
   const navigate = useNavigate()
   const [summary, setSummary] = useState({
     activeAccounts: 0,
@@ -331,6 +317,7 @@ function BachatDashboardView({ user }) {
   const [enrollSearch, setEnrollSearch] = useState('')
   const [enrollResults, setEnrollResults] = useState([])
   const [enrollLoading, setEnrollLoading] = useState(false)
+  const enrollOpenedFromRoute = useRef(false)
   const debouncedSearch = useDebouncedValue(search, 250)
   const debouncedEnrollSearch = useDebouncedValue(enrollSearch, 250)
 
@@ -501,6 +488,21 @@ function BachatDashboardView({ user }) {
       resolveEnrollmentCandidate(customer)
     }
   }
+
+  useEffect(() => {
+    if (!openEnroll || enrollOpenedFromRoute.current) return
+    enrollOpenedFromRoute.current = true
+    setEnrollSearch('')
+    setEnrollModal(
+      createEnrollmentModalState({
+        open: true,
+        form: {
+          ...enrollmentDefaults,
+          startDate: todayKey(),
+        },
+      }),
+    )
+  }, [openEnroll])
 
   const resolveEnrollmentCandidate = async (customer) => {
     if (!user || !customer) return
@@ -768,7 +770,7 @@ function BachatDashboardView({ user }) {
           <p className="mt-1 text-sm text-slate-500">Module enrollment and account operations.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Link to="/bachat/collect" className="btn-secondary gap-2">
+          <Link to="/bachat/collections" className="btn-secondary gap-2">
             Open Bachat Daily Collection
           </Link>
           <button type="button" className="btn-primary gap-2" onClick={() => openEnrollmentModal()}>
@@ -1068,8 +1070,9 @@ function BachatDashboardView({ user }) {
   )
 }
 
-function ModuleDashboardPage() {
-  const { moduleId } = useParams()
+function ModuleDashboardPage({ moduleOverride, openEnroll = false }) {
+  const { moduleId: routeModuleId } = useParams()
+  const moduleId = moduleOverride || routeModuleId
   const config = moduleConfig[moduleId]
   const { user } = useAuth()
   const [stats, setStats] = useState(baseStats)
@@ -1124,7 +1127,7 @@ function ModuleDashboardPage() {
   if (!config) return <Navigate to="/dashboard" replace />
   if (loading) return <ModuleDashboardSkeleton />
   if (moduleId === 'bachat') {
-    return <BachatDashboardView moduleSummary={moduleSummary} user={user} />
+    return <BachatDashboardView moduleSummary={moduleSummary} user={user} openEnroll={openEnroll} />
   }
 
   const Icon = config.icon
@@ -1176,59 +1179,62 @@ function ModuleDashboardPage() {
         ))}
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+      <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
         <article className="card p-4">
-          <div className="mb-4">
-            <h3 className="section-title">Collection Progress</h3>
-            <p className="text-sm text-slate-500">Realtime trend from the shared finance stream.</p>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="section-title">Finance Snapshot</h3>
+              <p className="text-sm text-slate-500">Current operating totals for this module.</p>
+            </div>
+            <span className="rounded-lg bg-slate-100 p-2.5 text-slate-700">
+              <FiActivity />
+            </span>
           </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats.collectionTrend}>
-                <defs>
-                  <linearGradient id="moduleCollection" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#0891b2" stopOpacity={0.22} />
-                    <stop offset="95%" stopColor="#0891b2" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="label" tickLine={false} axisLine={false} />
-                <YAxis tickLine={false} axisLine={false} tickFormatter={(value) => `INR ${value}`} />
-                <Tooltip content={<MoneyTooltip />} />
-                <Area
-                  type="monotone"
-                  dataKey={moduleId === 'loan' ? 'emi' : 'daily'}
-                  name={moduleId === 'loan' ? 'EMI' : 'Daily'}
-                  stroke="#0891b2"
-                  strokeWidth={2}
-                  fill="url(#moduleCollection)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+          <div className="space-y-3">
+            <FinanceRow label="Module amount" value={moduleSummary?.amount || 0} />
+            <FinanceRow label="Pending / due" value={moduleSummary?.pending || 0} />
+            <FinanceRow label="Monthly collection" value={stats.monthlyCollection} />
+            <FinanceRow label="Monthly expenses" value={stats.monthlyExpenses} />
+            <FinanceRow label="Profit / loss" value={stats.profitLossMtd} />
           </div>
         </article>
 
-        <article className="card p-4">
-          <div className="mb-4">
-            <h3 className="section-title">Collector Performance</h3>
-            <p className="text-sm text-slate-500">Collections and EMI contribution.</p>
+        <article className="card overflow-hidden">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <h3 className="section-title">Recent Collection Days</h3>
           </div>
-          <div className="h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.collectorPerformance} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis type="number" hide />
-                <YAxis
-                  type="category"
-                  dataKey="collectorName"
-                  width={105}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip content={<MoneyTooltip />} />
-                <Bar dataKey="totalAmount" name="Total" fill="#0f766e" radius={[0, 6, 6, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Daily</th>
+                  <th className="px-4 py-3">EMI</th>
+                  <th className="px-4 py-3">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {stats.collectionTrend.slice(-6).map((item) => (
+                  <tr key={item.date || item.label}>
+                    <td className="px-4 py-3 font-semibold text-slate-950">
+                      {item.date || item.label}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600">{formatCurrency(item.daily)}</td>
+                    <td className="px-4 py-3 text-slate-600">{formatCurrency(item.emi)}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-950">
+                      {formatCurrency(item.amount)}
+                    </td>
+                  </tr>
+                ))}
+                {stats.collectionTrend.length === 0 && (
+                  <tr>
+                    <td className="px-4 py-8 text-center text-slate-500" colSpan="4">
+                      No collection activity yet
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </article>
       </section>

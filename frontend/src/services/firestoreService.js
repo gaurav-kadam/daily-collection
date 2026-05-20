@@ -1,15 +1,20 @@
 export const COLLECTIONS = {
   users: 'users',
   customers: 'customers',
+  dailyCollectionAccounts: 'dailyCollectionAccounts',
   dailyCollections: 'dailyCollections',
+  dailyCollectionSummary: 'dailyCollectionSummary',
   bachatAccounts: 'bachatAccounts',
   bachatCollections: 'bachatCollections',
   bachatPenalties: 'bachatPenalties',
   bachatClosures: 'bachatClosures',
   bachatSummary: 'bachatSummary',
   customerFinancials: 'customerFinancials',
+  loanAccounts: 'loanAccounts',
+  loanSummary: 'loanSummary',
   loans: 'loans',
   emiPayments: 'emiPayments',
+  fdAccounts: 'fdAccounts',
   notifications: 'notifications',
   dailySummaries: 'dailySummaries',
   penalties: 'penalties',
@@ -24,6 +29,7 @@ export const USER_ROLES = {
 
 export const MODULE_FLAGS_TEMPLATE = Object.freeze({
   bachat: false,
+  dailyCollection: false,
   saving: false,
   loan: false,
   bishi: false,

@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -14,6 +15,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '../firebase/firebase'
 import {
+  buildModuleFlags,
   COLLECTIONS,
   FINANCE_RULES,
   USER_ROLES,
@@ -32,6 +34,7 @@ import {
 
 const loansRef = collection(db, COLLECTIONS.loans)
 const paymentsRef = collection(db, COLLECTIONS.emiPayments)
+const loanAccountsRef = collection(db, COLLECTIONS.loanAccounts)
 
 const uniqueIds = (ids = []) => [...new Set(ids.filter(Boolean).map(String))]
 
@@ -145,6 +148,14 @@ export const getLoanEligibility = async (customer) => {
   }
 }
 
+export const getLoanAccount = async (customerId) => {
+  const normalizedId = normalizeText(customerId)
+  if (!normalizedId) return null
+
+  const snapshot = await getDoc(doc(db, COLLECTIONS.loanAccounts, normalizedId))
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null
+}
+
 export const createLoan = async ({ customer, payload, currentUser }) => {
   const loanReference = doc(loansRef)
   const eligibility = await getLoanEligibility(customer)
@@ -212,12 +223,59 @@ export const createLoan = async ({ customer, payload, currentUser }) => {
   }
 
   await runTransaction(db, async (transaction) => {
+    const customerReference = doc(db, COLLECTIONS.customers, record.customerId)
+    const customerSnapshot = await transaction.get(customerReference)
+    const customerData = customerSnapshot.exists() ? customerSnapshot.data() : {}
     transaction.set(loanReference, record)
-    transaction.update(doc(db, COLLECTIONS.customers, record.customerId), {
-      loanStatus: 'active',
-      activeLoanId: loanReference.id,
-      updatedAt: serverTimestamp(),
-    })
+    transaction.set(
+      doc(loanAccountsRef, record.customerId),
+      {
+        customerId: record.customerId,
+        customerName: record.customerName,
+        shopName: record.shopName,
+        collectorId: record.collectorId,
+        collectorName: record.collectorName,
+        activeLoanId: loanReference.id,
+        activeLoanCount: 1,
+        principal: loanAmount,
+        principalPaise: loanAmountPaise,
+        interestRate,
+        monthlyEMI,
+        monthlyEMIPaise,
+        overdueDays: 0,
+        remainingBalance: totalPayableAmount,
+        remainingBalancePaise: totalPayableAmountPaise,
+        status: record.loanStatus,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+    transaction.set(
+      customerReference,
+      {
+        moduleFlags: buildModuleFlags(customerData.moduleFlags, { loan: true }),
+        dailyAmount: deleteField(),
+        dailyAmountPaise: deleteField(),
+        totalSavings: deleteField(),
+        totalSavingsPaise: deleteField(),
+        pendingAmount: deleteField(),
+        pendingAmountPaise: deleteField(),
+        pendingDays: deleteField(),
+        overdueDays: deleteField(),
+        penaltyAmount: deleteField(),
+        penaltyAmountPaise: deleteField(),
+        totalCollected: deleteField(),
+        totalCollectedPaise: deleteField(),
+        loanStatus: deleteField(),
+        activeLoanId: deleteField(),
+        lastCollectionDate: deleteField(),
+        lastDailySyncDate: deleteField(),
+        lastPenaltyUpdated: deleteField(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
   })
   return record
 }
@@ -365,6 +423,25 @@ export const updateLoanPenalty = async (loan, currentUser) => {
       updatedAt: serverTimestamp(),
     })
     transaction.set(
+      doc(loanAccountsRef, loanData.customerId),
+      {
+        customerId: loanData.customerId,
+        customerName: loanData.customerName || '',
+        shopName: loanData.shopName || '',
+        collectorId: loanData.collectorId || currentUser?.userId || '',
+        collectorName: loanData.collectorName || '',
+        activeLoanId: loanId,
+        remainingBalance: moneyValue(loanData, 'remainingBalance'),
+        remainingBalancePaise: moneyToPaise(moneyValue(loanData, 'remainingBalance')),
+        monthlyEMI: moneyValue(loanData, 'monthlyEMI'),
+        monthlyEMIPaise: moneyToPaise(moneyValue(loanData, 'monthlyEMI')),
+        overdueDays: metrics.overdueDays,
+        status: metrics.loanStatus,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+    transaction.set(
       penaltyReference,
       {
         penaltyId: penaltyReference.id,
@@ -410,6 +487,7 @@ export default {
   processingFeeForAmount,
   calculateLoanMetrics,
   getLoanEligibility,
+  getLoanAccount,
   listenLoans,
   createLoan,
   getAll,

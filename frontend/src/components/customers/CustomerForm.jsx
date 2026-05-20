@@ -11,7 +11,6 @@ const initialState = {
   alternateMobile: '',
   address: '',
   area: '',
-  dailyAmount: 0,
   joiningDate: new Date().toISOString().slice(0, 10),
   idProofType: '',
   idProofNumber: '',
@@ -125,10 +124,7 @@ function CustomerForm({
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) return
 
-    onSubmit({
-      ...values,
-      dailyAmount: Number(values.dailyAmount || 0),
-    })
+    onSubmit(values)
   }
 
   return (

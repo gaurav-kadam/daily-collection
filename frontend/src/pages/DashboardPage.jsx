@@ -1,31 +1,16 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 import {
   FiActivity,
   FiAlertTriangle,
   FiArrowUpRight,
-  FiBarChart2,
   FiBriefcase,
   FiClock,
   FiCreditCard,
   FiDatabase,
   FiDollarSign,
+  FiFileText,
   FiLayers,
-  FiPieChart,
   FiShield,
   FiTrendingDown,
   FiTrendingUp,
@@ -111,24 +96,6 @@ const moduleTone = {
   expenses: 'from-rose-500 to-red-500',
   bishi: 'from-violet-500 to-fuchsia-500',
   investments: 'from-slate-700 to-slate-950',
-}
-
-const pieColors = ['#0891b2', '#059669', '#f59e0b', '#e11d48']
-
-const clampPercent = (value) => Math.max(Math.min(Number(value || 0), 100), 0)
-
-function MoneyTooltip({ active, payload, label }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-soft">
-      <p className="font-semibold text-slate-900">{label}</p>
-      {payload.map((item) => (
-        <p key={item.dataKey} className="text-slate-600">
-          {item.name || item.dataKey}: {formatCurrency(item.value)}
-        </p>
-      ))}
-    </div>
-  )
 }
 
 const FinanceStatCard = memo(function FinanceStatCard({
@@ -256,112 +223,6 @@ function ModuleCard({ module }) {
         <FiArrowUpRight />
       </Link>
     </article>
-  )
-}
-
-function AnalyticsSection({ stats }) {
-  const collectionMix = useMemo(
-    () => [
-      { name: 'Daily', value: stats.monthlySummary.dailyCollection },
-      { name: 'EMI', value: stats.monthlySummary.emiCollection },
-      { name: 'Pending', value: stats.monthlySummary.pendingAmount },
-      { name: 'Expenses', value: stats.monthlyExpenses },
-    ],
-    [stats],
-  )
-
-  return (
-    <section className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-      <article className="card p-4">
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            <h3 className="section-title">Collection Analytics</h3>
-            <p className="text-sm text-slate-500">Daily and EMI movement for this month.</p>
-          </div>
-          <span className="rounded-lg bg-cyan-50 p-2.5 text-cyan-700">
-            <FiBarChart2 />
-          </span>
-        </div>
-        <div className="h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={stats.collectionTrend}>
-              <defs>
-                <linearGradient id="dailyCollection" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#0891b2" stopOpacity={0.22} />
-                  <stop offset="95%" stopColor="#0891b2" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="emiCollection" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#059669" stopOpacity={0.2} />
-                  <stop offset="95%" stopColor="#059669" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="label" tickLine={false} axisLine={false} />
-              <YAxis tickLine={false} axisLine={false} tickFormatter={(value) => `INR ${value}`} />
-              <Tooltip content={<MoneyTooltip />} />
-              <Area
-                type="monotone"
-                dataKey="daily"
-                name="Daily"
-                stroke="#0891b2"
-                strokeWidth={2}
-                fill="url(#dailyCollection)"
-              />
-              <Area
-                type="monotone"
-                dataKey="emi"
-                name="EMI"
-                stroke="#059669"
-                strokeWidth={2}
-                fill="url(#emiCollection)"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </article>
-
-      <article className="card p-4">
-        <div className="mb-4">
-          <h3 className="section-title">Monthly Collection Summary</h3>
-          <p className="text-sm text-slate-500">
-            {Math.round(clampPercent(stats.collectionProgress))}% of expected movement.
-          </p>
-        </div>
-        <div className="h-52">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={collectionMix}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={58}
-                outerRadius={82}
-                paddingAngle={3}
-              >
-                {collectionMix.map((entry, index) => (
-                  <Cell key={entry.name} fill={pieColors[index % pieColors.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value) => formatCurrency(value)} />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="space-y-2">
-          {collectionMix.map((item, index) => (
-            <div key={item.name} className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2 text-slate-600">
-                <span
-                  className="h-2.5 w-2.5 rounded-full"
-                  style={{ background: pieColors[index % pieColors.length] }}
-                />
-                {item.name}
-              </span>
-              <span className="font-semibold text-slate-950">{formatCurrency(item.value)}</span>
-            </div>
-          ))}
-        </div>
-      </article>
-    </section>
   )
 }
 
@@ -528,7 +389,7 @@ function DashboardPage() {
             </p>
           </div>
           <Link to="/reports" className="btn-secondary gap-2 self-start md:self-auto">
-            <FiPieChart />
+            <FiFileText />
             Reports
           </Link>
         </div>
@@ -538,8 +399,6 @@ function DashboardPage() {
           ))}
         </div>
       </section>
-
-      <AnalyticsSection stats={stats} />
 
       <section className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
         <article className="card p-4">
@@ -635,29 +494,6 @@ function DashboardPage() {
                 )}
               </tbody>
             </table>
-          </div>
-        </article>
-
-        <article className="card overflow-hidden">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <h3 className="section-title">Collector Performance</h3>
-          </div>
-          <div className="h-80 p-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.collectorPerformance} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis type="number" hide />
-                <YAxis
-                  type="category"
-                  dataKey="collectorName"
-                  width={110}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip content={<MoneyTooltip />} />
-                <Bar dataKey="totalAmount" name="Total" fill="#0f766e" radius={[0, 6, 6, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
           </div>
         </article>
       </section>

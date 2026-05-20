@@ -43,6 +43,11 @@ const scopedCustomerConstraints = (currentUser) =>
     ? [where('assignedCollectorId', '==', currentUser.userId), orderBy('shopName')]
     : [orderBy('shopName')]
 
+const scopedDailyAccountConstraints = (currentUser) =>
+  currentUser?.role === USER_ROLES.collector
+    ? [where('collectorId', '==', currentUser.userId), where('status', '==', 'active'), orderBy('updatedAt', 'desc')]
+    : [where('status', '==', 'active'), orderBy('updatedAt', 'desc')]
+
 const scopedDateConstraints = (currentUser, field, date) =>
   currentUser?.role === USER_ROLES.collector
     ? [where('collectorId', '==', currentUser.userId), where(field, '==', date)]
@@ -413,6 +418,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
   const dayOfMonth = Math.max(numberValue(today.slice(8), 1), 1)
   const state = {
     customers: [],
+    dailyAccounts: [],
     todayCollections: [],
     monthCollections: [],
     loans: [],
@@ -431,7 +437,8 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     if (!state.bachatSummaryReady) return
 
     const activeCustomers = state.customers.filter((item) => item.status !== 'inactive')
-    const pendingCustomers = getPendingCustomerRows(activeCustomers, state.todayCollections)
+    const activeDailyAccounts = state.dailyAccounts.filter((item) => item.status === 'active')
+    const pendingCustomers = getPendingCustomerRows(activeDailyAccounts, state.todayCollections)
     const activeLoans = state.loans.filter((item) => item.loanStatus === 'active')
     const overdueLoans = activeLoans
       .map((loan) => ({ ...loan, ...calculateLoanMetrics(loan) }))
@@ -444,8 +451,8 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     const bachatPendingAmount = moneyValue(state.bachatSummary, 'todayPendingAmount')
     const bachatActiveAccounts = numberValue(state.bachatSummary.activeAccounts)
     const bachatCollectionProgress = numberValue(state.bachatSummary.collectionProgress)
-    const totalSavings = activeCustomers.reduce(
-      (sum, item) => sum + moneyValue(item, 'totalSavings'),
+    const totalSavings = activeDailyAccounts.reduce(
+      (sum, item) => sum + moneyValue(item, 'totalCollected'),
       0,
     )
     const totalLoanGiven = state.loans.reduce(
@@ -461,7 +468,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     const totalPenaltyAmount =
       getActivePenaltyTotal(state.penalties) ||
       overdueLoans.reduce((sum, loan) => sum + moneyValue(loan, 'penaltyAmount'), 0) +
-        activeCustomers.reduce((sum, customer) => sum + moneyValue(customer, 'penaltyAmount'), 0)
+        activeDailyAccounts.reduce((sum, account) => sum + moneyValue(account, 'penaltyAmount'), 0)
     const ledger = state.financeEntries
     const ledgerCollections = sumFinanceEntries(ledger, ['collection', 'received', 'income'])
     const totalDeposits = sumFinanceEntries(ledger, ['deposit'])
@@ -500,8 +507,8 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       'business',
     ])
     const monthlyCollection = bachatMonthlyCollection + monthlyEmiCollection
-    const monthlyExpectedDaily = activeCustomers.reduce(
-      (sum, customer) => sum + moneyValue(customer, 'dailyAmount') * dayOfMonth,
+    const monthlyExpectedDaily = activeDailyAccounts.reduce(
+      (sum, account) => sum + moneyValue(account, 'dailyAmount') * dayOfMonth,
       0,
     )
     const monthlyExpectedEmi = activeLoans.reduce(
@@ -704,6 +711,14 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     ),
     onSnapshot(
       query(
+        collection(db, COLLECTIONS.dailyCollectionAccounts),
+        ...scopedDailyAccountConstraints(currentUser),
+      ),
+      (snapshot) => updateState('dailyAccounts', snapshot),
+      onError,
+    ),
+    onSnapshot(
+      query(
         collection(db, COLLECTIONS.dailyCollections),
         ...scopedDateConstraints(currentUser, 'date', today),
         orderBy('createdAt', 'desc'),
@@ -786,13 +801,13 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
   }
 }
 
-const syncDailyPenalty = async (customer, currentUser) => {
-  const customerId = customer.customerId || customer.id
-  const customerReference = doc(db, COLLECTIONS.customers, customerId)
+const syncDailyPenalty = async (account, currentUser) => {
+  const customerId = account.customerId || account.id
+  const accountReference = doc(db, COLLECTIONS.dailyCollectionAccounts, customerId)
   const penaltyReference = doc(db, COLLECTIONS.penalties, `daily_${customerId}`)
 
   await runTransaction(db, async (transaction) => {
-    const snapshot = await transaction.get(customerReference)
+    const snapshot = await transaction.get(accountReference)
     if (!snapshot.exists()) return
     const data = snapshot.data()
     if (data.status === 'inactive') return
@@ -817,7 +832,7 @@ const syncDailyPenalty = async (customer, currentUser) => {
       nextPendingDays * FINANCE_RULES.dailyPenaltyPerDay,
     )
 
-    transaction.update(customerReference, {
+    transaction.update(accountReference, {
       pendingAmount: paiseToMoney(nextPendingPaise),
       pendingAmountPaise: nextPendingPaise,
       pendingDays: nextPendingDays,
@@ -835,10 +850,10 @@ const syncDailyPenalty = async (customer, currentUser) => {
         type: 'daily',
         status: nextPendingPaise > 0 ? 'active' : 'resolved',
         customerId,
-        customerName: data.ownerName || '',
+        customerName: data.customerName || data.fullName || '',
         shopName: data.shopName || '',
-        collectorId: data.assignedCollectorId || currentUser?.userId || '',
-        collectorName: data.assignedCollectorName || '',
+        collectorId: data.collectorId || currentUser?.userId || '',
+        collectorName: data.collectorName || '',
         overdueDays: nextPendingDays,
         penaltyAmount: paiseToMoney(penaltyAmountPaise),
         penaltyAmountPaise,
@@ -858,11 +873,11 @@ export const syncFinanceState = async (currentUser) => {
   const today = todayKey()
   if (hasSyncedToday(currentUser, today)) return
 
-  const [customerSnapshot, loanSnapshot] = await Promise.all([
+  const [dailyAccountSnapshot, loanSnapshot] = await Promise.all([
     getDocs(
       query(
-        collection(db, COLLECTIONS.customers),
-        ...scopedCustomerConstraints(currentUser),
+        collection(db, COLLECTIONS.dailyCollectionAccounts),
+        ...scopedDailyAccountConstraints(currentUser),
         limit(pageLimit(200, 200, 500)),
       ),
     ),
@@ -875,25 +890,25 @@ export const syncFinanceState = async (currentUser) => {
     ),
   ])
 
-  const customers = docsWithIds(customerSnapshot)
+  const dailyAccounts = docsWithIds(dailyAccountSnapshot)
   const loans = docsWithIds(loanSnapshot)
   const cutoffDate = addDaysKey(today, -1)
-  const staleCustomers = customers.filter(
-    (customer) => {
+  const staleDailyAccounts = dailyAccounts.filter(
+    (account) => {
       const syncDate =
-        customer.lastDailySyncDate || customer.lastCollectionDate || customer.joiningDate || today
+        account.lastDailySyncDate || account.lastCollectionDate || account.joiningDate || today
       return (
-        customer.status !== 'inactive' &&
-        (customer.lastPenaltyUpdated !== today || syncDate < cutoffDate)
+        account.status !== 'inactive' &&
+        (account.lastPenaltyUpdated !== today || syncDate < cutoffDate)
       )
     },
   )
   const staleLoans = loans.filter((loan) => loan.lastPenaltyUpdated !== today)
 
   const syncTasks = [
-    ...staleCustomers
+    ...staleDailyAccounts
       .slice(0, 100)
-      .map((customer) => () => syncDailyPenalty(customer, currentUser)),
+      .map((account) => () => syncDailyPenalty(account, currentUser)),
     ...staleLoans
       .slice(0, 100)
       .map((loan) => () => updateLoanPenalty(loan, currentUser)),

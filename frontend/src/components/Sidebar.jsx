@@ -1,7 +1,8 @@
-import { memo } from 'react'
-import { NavLink } from 'react-router-dom'
+import { memo, useEffect, useState } from 'react'
+import { Link, NavLink, useLocation } from 'react-router-dom'
 import {
   FiBell,
+  FiChevronDown,
   FiCreditCard,
   FiGrid,
   FiLogOut,
@@ -19,7 +20,28 @@ const navigation = {
   admin: [
     { to: '/dashboard', label: 'Dashboard', icon: FiGrid },
     { to: '/customers', label: 'Customers', icon: FiUsers },
-    { to: '/bachat/collect', label: 'Bachat Daily Collection', icon: MdOutlinePayments },
+    {
+      type: 'group',
+      id: 'bachat',
+      label: 'Bachat',
+      icon: MdOutlineAccountBalanceWallet,
+      activePrefixes: ['/bachat', '/dashboard/bachat'],
+      children: [
+        {
+          to: '/bachat/dashboard',
+          label: 'Bachat Dashboard',
+          icon: FiGrid,
+          activePaths: ['/bachat/dashboard', '/dashboard/bachat'],
+        },
+        { to: '/bachat/enroll', label: 'Add Customer To Bachat', icon: FiPlusCircle },
+        {
+          to: '/bachat/collections',
+          label: 'Bachat Daily Collections',
+          icon: MdOutlinePayments,
+          activePaths: ['/bachat/collections', '/bachat/collect'],
+        },
+      ],
+    },
     { to: '/collections', label: 'Daily Collections', icon: MdOutlinePayments },
     { to: '/pending-customers', label: 'Pending Customers', icon: FiAlertTriangle },
     { to: '/loans', label: 'Loans', icon: MdOutlineAccountBalanceWallet },
@@ -32,7 +54,28 @@ const navigation = {
   ],
   collector: [
     { to: '/dashboard', label: 'Dashboard', icon: FiGrid },
-    { to: '/bachat/collect', label: 'Bachat Daily Collection', icon: MdOutlinePayments },
+    {
+      type: 'group',
+      id: 'bachat',
+      label: 'Bachat',
+      icon: MdOutlineAccountBalanceWallet,
+      activePrefixes: ['/bachat', '/dashboard/bachat'],
+      children: [
+        {
+          to: '/bachat/dashboard',
+          label: 'Bachat Dashboard',
+          icon: FiGrid,
+          activePaths: ['/bachat/dashboard', '/dashboard/bachat'],
+        },
+        { to: '/bachat/enroll', label: 'Add Customer To Bachat', icon: FiPlusCircle },
+        {
+          to: '/bachat/collections',
+          label: 'Bachat Daily Collections',
+          icon: MdOutlinePayments,
+          activePaths: ['/bachat/collections', '/bachat/collect'],
+        },
+      ],
+    },
     { to: '/collections', label: 'Daily Collections', icon: MdOutlinePayments },
     { to: '/pending-customers', label: 'Pending Customers', icon: FiAlertTriangle },
     { to: '/emi-payments', label: 'EMI Payments', icon: FiCreditCard },
@@ -43,9 +86,32 @@ const navigation = {
   ],
 }
 
+const isRouteActive = (pathname, item) => {
+  if (item.activePaths?.includes(pathname)) return true
+  return pathname === item.to
+}
+
+const isGroupActive = (pathname, group) =>
+  group.activePrefixes?.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)) ||
+  group.children?.some((child) => isRouteActive(pathname, child))
+
 function Sidebar({ open, onClose }) {
   const { logout, user } = useAuth()
+  const { pathname } = useLocation()
   const links = navigation[user?.role] || navigation.collector
+  const [expandedGroups, setExpandedGroups] = useState({})
+
+  useEffect(() => {
+    links.forEach((link) => {
+      if (link.type === 'group' && isGroupActive(pathname, link)) {
+        setExpandedGroups((previous) => ({ ...previous, [link.id]: true }))
+      }
+    })
+  }, [links, pathname])
+
+  const toggleGroup = (groupId) => {
+    setExpandedGroups((previous) => ({ ...previous, [groupId]: !previous[groupId] }))
+  }
 
   return (
     <>
@@ -81,10 +147,66 @@ function Sidebar({ open, onClose }) {
         <nav className="flex-1 space-y-1 px-3 py-4">
           {links.map((link) => {
             const Icon = link.icon
+            if (link.type === 'group') {
+              const expanded = Boolean(expandedGroups[link.id])
+              const active = isGroupActive(pathname, link)
+
+              return (
+                <div key={link.id} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => toggleGroup(link.id)}
+                    className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors duration-150 ${
+                      active
+                        ? 'bg-cyan-500 text-slate-950'
+                        : 'text-slate-300 hover:bg-slate-900 hover:text-white'
+                    }`}
+                    aria-expanded={expanded}
+                  >
+                    <span className="flex items-center gap-3">
+                      <Icon size={18} />
+                      <span>{link.label}</span>
+                    </span>
+                    <FiChevronDown
+                      size={16}
+                      className={`transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+
+                  {expanded && (
+                    <div className="ml-4 space-y-1 border-l border-slate-800 pl-3">
+                      {link.children.map((child) => {
+                        const ChildIcon = child.icon
+                        const childActive = isRouteActive(pathname, child)
+                        return (
+                          <Link
+                            key={child.to}
+                            to={child.to}
+                            onClick={onClose}
+                            onFocus={() => preloadRoute(child.to)}
+                            onMouseEnter={() => preloadRoute(child.to)}
+                            className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ${
+                              childActive
+                                ? 'bg-slate-800 text-cyan-200 ring-1 ring-cyan-400/20'
+                                : 'text-slate-400 hover:bg-slate-900 hover:text-white'
+                            }`}
+                          >
+                            <ChildIcon size={16} />
+                            <span>{child.label}</span>
+                          </Link>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            }
+
             return (
               <NavLink
                 key={link.to}
                 to={link.to}
+                end={link.to === '/dashboard'}
                 onClick={onClose}
                 onFocus={() => preloadRoute(link.to)}
                 onMouseEnter={() => preloadRoute(link.to)}

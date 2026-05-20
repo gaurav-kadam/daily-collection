@@ -4,8 +4,6 @@ import QuickCollectionModal from '../components/collections/QuickCollectionModal
 import Loader from '../components/Loader'
 import useAuth from '../hooks/useAuth'
 import collectionService from '../services/collectionService'
-import customerService from '../services/customerService'
-import { USER_ROLES } from '../services/firestoreService'
 import { todayISO } from '../utils/date'
 
 function PendingCustomersPage({ title = 'Pending Customers' }) {
@@ -24,10 +22,7 @@ function PendingCustomersPage({ title = 'Pending Customers' }) {
     try {
       const [pendingData, customerData] = await Promise.all([
         collectionService.getPending({ pageSize: 100, currentUser: user }),
-        customerService.getAll({
-          pageSize: 100,
-          assignedCollectorId: user?.role === USER_ROLES.collector ? user.userId : undefined,
-        }),
+        collectionService.getActiveDailyCollectionAccounts({ pageSize: 100, currentUser: user }),
       ])
       setPendingCustomers(pendingData.results || [])
       setCustomers(customerData.results || [])
