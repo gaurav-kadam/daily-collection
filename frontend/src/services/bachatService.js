@@ -136,10 +136,16 @@ const resolveBachatSummaryState = ({ summaryData = {}, nowDateKey = todayKey() }
   const expectedMonthKey = monthKey(expectedDayKey)
   const summaryDayKey = normalizeText(summaryData.summaryDayKey)
   const summaryMonthKey = normalizeText(summaryData.summaryMonthKey)
+  const hasTotalBachatAmount =
+    summaryData.totalBachatAmount !== undefined || summaryData.totalBachatAmountPaise !== undefined
 
   const todayCollectionPaise = moneyToPaise(moneyValue(summaryData, 'todayCollection'))
   const monthlyCollectionPaise = moneyToPaise(moneyValue(summaryData, 'monthlyCollection'))
-  const totalCollectedPaise = moneyToPaise(moneyValue(summaryData, 'totalCollected'))
+  const totalBachatAmountPaise = moneyToPaise(
+    hasTotalBachatAmount
+      ? moneyValue(summaryData, 'totalBachatAmount')
+      : moneyValue(summaryData, 'totalCollected'),
+  )
   const penaltiesPaise = moneyToPaise(moneyValue(summaryData, 'penalties'))
   const activeDailyExpectedPaise = moneyToPaise(moneyValue(summaryData, 'activeDailyExpected'))
 
@@ -150,7 +156,7 @@ const resolveBachatSummaryState = ({ summaryData = {}, nowDateKey = todayKey() }
   return {
     activeAccounts: nonNegativeInteger(summaryData.activeAccounts),
     activeDailyExpectedPaise: Math.max(activeDailyExpectedPaise, 0),
-    totalCollectedPaise: Math.max(totalCollectedPaise, 0),
+    totalBachatAmountPaise: Math.max(totalBachatAmountPaise, 0),
     penaltiesPaise: Math.max(penaltiesPaise, 0),
     todayCollectionPaise: Math.max(normalizedTodayCollectionPaise, 0),
     monthlyCollectionPaise: Math.max(normalizedMonthlyCollectionPaise, 0),
@@ -174,8 +180,10 @@ const buildBachatSummaryPatch = ({
     state.activeDailyExpectedPaise + moneyToPaise(numberValue(deltas.activeDailyExpected)),
     0,
   )
-  const totalCollectedPaise = Math.max(
-    state.totalCollectedPaise + moneyToPaise(numberValue(deltas.totalCollected)),
+  const totalBachatAmountDelta =
+    deltas.totalBachatAmount !== undefined ? deltas.totalBachatAmount : deltas.totalCollected
+  const totalBachatAmountPaise = Math.max(
+    state.totalBachatAmountPaise + moneyToPaise(numberValue(totalBachatAmountDelta)),
     0,
   )
   const penaltiesPaise = Math.max(
@@ -216,10 +224,10 @@ const buildBachatSummaryPatch = ({
     activeAccounts,
     activeDailyExpected: paiseToMoney(activeDailyExpectedPaise),
     activeDailyExpectedPaise,
-    totalCollected: paiseToMoney(totalCollectedPaise),
-    totalCollectedPaise,
-    totalBachatAmount: paiseToMoney(totalCollectedPaise),
-    totalBachatAmountPaise: totalCollectedPaise,
+    totalBachatAmount: paiseToMoney(totalBachatAmountPaise),
+    totalBachatAmountPaise,
+    totalCollected: paiseToMoney(totalBachatAmountPaise),
+    totalCollectedPaise: totalBachatAmountPaise,
     penalties: paiseToMoney(penaltiesPaise),
     penaltiesPaise,
     todayCollection: paiseToMoney(todayCollectionPaise),
@@ -351,10 +359,10 @@ export const listenBachatSummary = (callback, onError) =>
         activeAccounts: normalized.activeAccounts,
         activeDailyExpected: paiseToMoney(normalized.activeDailyExpectedPaise),
         activeDailyExpectedPaise: normalized.activeDailyExpectedPaise,
-        totalCollected: paiseToMoney(normalized.totalCollectedPaise),
-        totalCollectedPaise: normalized.totalCollectedPaise,
-        totalBachatAmount: paiseToMoney(normalized.totalCollectedPaise),
-        totalBachatAmountPaise: normalized.totalCollectedPaise,
+        totalBachatAmount: paiseToMoney(normalized.totalBachatAmountPaise),
+        totalBachatAmountPaise: normalized.totalBachatAmountPaise,
+        totalCollected: paiseToMoney(normalized.totalBachatAmountPaise),
+        totalCollectedPaise: normalized.totalBachatAmountPaise,
         penalties: paiseToMoney(normalized.penaltiesPaise),
         penaltiesPaise: normalized.penaltiesPaise,
         todayCollection: paiseToMoney(normalized.todayCollectionPaise),
@@ -1188,7 +1196,7 @@ export const applyBachatCollectionV2InTransaction = async ({
       nowDateKey: nowKey,
       collectionDateKey: date,
       deltas: {
-        totalCollected: paiseToMoney(totalReceivedPaise),
+        totalBachatAmount: paiseToMoney(totalReceivedPaise),
         penalties: paiseToMoney(penaltyDeltaPaise),
         todayCollection: isToday ? paiseToMoney(totalReceivedPaise) : 0,
         monthlyCollection: paiseToMoney(totalReceivedPaise),

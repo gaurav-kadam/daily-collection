@@ -27,6 +27,7 @@ import {
   paiseToMoney,
   todayKey,
 } from './firestoreService'
+import { listenBachatSummary } from './bachatService'
 import { calculateLoanMetrics, updateLoanPenalty } from './loanService'
 
 const buildScopedQuery = (collectionName, currentUser, collectorField = 'collectorId') => {
@@ -358,6 +359,7 @@ const makeEmptyStats = () => ({
   profitLossMtd: 0,
   todayPayouts: 0,
   todayExpenses: 0,
+  totalBachatAmount: 0,
   todayCollection: 0,
   todayEmiCollection: 0,
   monthlyCollection: 0,
@@ -419,11 +421,14 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     recentPayments: [],
     penalties: [],
     financeEntries: [],
+    bachatSummary: {},
+    bachatSummaryReady: false,
   }
   let recomputeHandle = null
 
   const recompute = () => {
     recomputeHandle = null
+    if (!state.bachatSummaryReady) return
 
     const activeCustomers = state.customers.filter((item) => item.status !== 'inactive')
     const pendingCustomers = getPendingCustomerRows(activeCustomers, state.todayCollections)
@@ -433,6 +438,12 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       .filter((loan) => loan.overdueDays > 0)
     const monthlyDailyCollection = getCollectionTotal(state.monthCollections)
     const monthlyEmiCollection = getPaymentTotal(state.monthPayments)
+    const totalBachatAmount = moneyValue(state.bachatSummary, 'totalBachatAmount')
+    const todayBachatCollection = moneyValue(state.bachatSummary, 'todayCollection')
+    const bachatMonthlyCollection = moneyValue(state.bachatSummary, 'monthlyCollection')
+    const bachatPendingAmount = moneyValue(state.bachatSummary, 'todayPendingAmount')
+    const bachatActiveAccounts = numberValue(state.bachatSummary.activeAccounts)
+    const bachatCollectionProgress = numberValue(state.bachatSummary.collectionProgress)
     const totalSavings = activeCustomers.reduce(
       (sum, item) => sum + moneyValue(item, 'totalSavings'),
       0,
@@ -488,7 +499,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       'gold',
       'business',
     ])
-    const monthlyCollection = monthlyDailyCollection + monthlyEmiCollection
+    const monthlyCollection = bachatMonthlyCollection + monthlyEmiCollection
     const monthlyExpectedDaily = activeCustomers.reduce(
       (sum, customer) => sum + moneyValue(customer, 'dailyAmount') * dayOfMonth,
       0,
@@ -503,7 +514,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       0,
     )
     const totalAvailableBankBalance =
-      totalSavings +
+      totalBachatAmount +
       totalLoanRepaid +
       totalDeposits +
       totalFdAmount +
@@ -518,12 +529,12 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       makeModuleSummary({
         id: 'bachat',
         label: 'Bachat',
-        amount: totalSavings,
-        accounts: activeCustomers.length,
-        active: activeCustomers.length,
-        pending: dailyPendingAmount,
+        amount: totalBachatAmount,
+        accounts: bachatActiveAccounts,
+        active: bachatActiveAccounts,
+        pending: bachatPendingAmount,
         indicator: `${pendingCustomers.length} pending`,
-        progress: activeCustomers.length ? (state.todayCollections.length / activeCustomers.length) * 100 : 0,
+        progress: bachatCollectionProgress,
       }),
       makeModuleSummary({
         id: 'saving',
@@ -603,6 +614,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     callback({
       totalCustomers: activeCustomers.length,
       totalSavings,
+      totalBachatAmount,
       pendingAmount: activeCustomers.reduce(
         (sum, item) => sum + moneyValue(item, 'pendingAmount'),
         0,
@@ -611,7 +623,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       totalLoanGiven,
       totalInvestments,
       totalAccounts:
-        activeCustomers.length +
+        bachatActiveAccounts +
         activeLoans.length +
         activeFdEntries.length +
         activeDepositEntries.length +
@@ -625,10 +637,10 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       profitLossMtd: monthlyCollection - monthlyExpenses,
       todayPayouts,
       todayExpenses,
-      todayCollection: getCollectionTotal(state.todayCollections),
+      todayCollection: todayBachatCollection,
       todayEmiCollection: getPaymentTotal(state.todayPayments),
       monthlyCollection,
-      monthlyDailyCollection,
+      monthlyDailyCollection: bachatMonthlyCollection,
       monthlyEmiCollection,
       paidToday: state.todayCollections.filter((item) => item.status === 'paid').length,
       pendingToday: pendingCustomers.filter((item) => item.missedToday).length,
@@ -659,7 +671,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       collectionProgress: monthlyTarget ? (monthlyCollection / monthlyTarget) * 100 : 0,
       lastUpdatedAt: Date.now(),
       monthlySummary: {
-        dailyCollection: monthlyDailyCollection,
+        dailyCollection: bachatMonthlyCollection,
         emiCollection: monthlyEmiCollection,
         totalCollection: monthlyCollection,
         pendingAmount: dailyPendingAmount,
@@ -673,7 +685,18 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     recomputeHandle = scheduleFrame(recompute)
   }
 
+  const updateValueState = (key, value) => {
+    state[key] = value || {}
+    state[`${key}Ready`] = true
+    if (recomputeHandle) cancelFrame(recomputeHandle)
+    recomputeHandle = scheduleFrame(recompute)
+  }
+
   const subscriptions = [
+    listenBachatSummary(
+      (summary) => updateValueState('bachatSummary', summary),
+      onError,
+    ),
     onSnapshot(
       query(collection(db, COLLECTIONS.customers), ...scopedCustomerConstraints(currentUser)),
       (snapshot) => updateState('customers', snapshot),

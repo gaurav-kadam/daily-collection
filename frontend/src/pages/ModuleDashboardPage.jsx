@@ -341,7 +341,7 @@ function BachatDashboardView({ user }) {
       (nextSummary) => {
         setSummary({
           activeAccounts: numberValue(nextSummary.activeAccounts),
-          totalBachatAmount: moneyValue(nextSummary, 'totalBachatAmount') || moneyValue(nextSummary, 'totalCollected'),
+          totalBachatAmount: moneyValue(nextSummary, 'totalBachatAmount'),
           monthlyCollection: moneyValue(nextSummary, 'monthlyCollection'),
           monthlyTarget: moneyValue(nextSummary, 'monthlyTarget'),
           todayCollection: moneyValue(nextSummary, 'todayCollection'),

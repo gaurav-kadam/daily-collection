@@ -50,6 +50,7 @@ const initialStats = {
   profitLossMtd: 0,
   todayPayouts: 0,
   todayExpenses: 0,
+  totalBachatAmount: 0,
   todayCollection: 0,
   todayEmiCollection: 0,
   monthlyCollection: 0,
@@ -185,19 +186,19 @@ function BalanceBanner({ stats }) {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Link
-              to="/collections"
-              onFocus={() => preloadRoute('/collections')}
-              onMouseEnter={() => preloadRoute('/collections')}
+              to="/dashboard/bachat"
+              onFocus={() => preloadRoute('/dashboard/bachat')}
+              onMouseEnter={() => preloadRoute('/dashboard/bachat')}
               className="group rounded-lg border border-white/10 bg-white/10 px-4 py-3 backdrop-blur transition duration-150 hover:-translate-y-0.5 hover:border-cyan-200/40 hover:bg-white/15 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-cyan-200/50 md:min-w-56"
             >
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">
-                Today's Collection (Bachat)
+                Total Bachat Balance
               </p>
               <p className="mt-1 font-display text-2xl font-bold text-white">
-                {formatCurrency(stats.todayCollection)}
+                {formatCurrency(stats.totalBachatAmount)}
               </p>
               <p className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-cyan-100">
-                View Collections
+                Open Bachat Dashboard
                 <FiArrowUpRight className="transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
               </p>
             </Link>
