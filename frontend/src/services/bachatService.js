@@ -24,6 +24,7 @@ import {
   USER_ROLES,
   addMonthsKey,
   dateKeyFromDate,
+  daysBetween,
   docsWithIds,
   elapsedMonthlyInstallments,
   moneyToPaise,
@@ -151,6 +152,39 @@ const daysInMonthFromDateKey = (dateKey = todayKey()) => {
 const normalizePaymentMethod = (value) => {
   const method = normalizeText(value).toLowerCase()
   return PAYMENT_METHODS.includes(method) ? method : 'cash'
+}
+
+const isActiveBachatAccount = (account = {}) => {
+  const status = normalizeText(account.status).toLowerCase()
+  return !status || status === 'active'
+}
+
+const resolveBachatLastPaymentDate = (account = {}, fallbackDate = todayKey()) =>
+  normalizeText(
+    account.lastPaymentDate ||
+      account.lastCollectionDate ||
+      account.enrolledOn ||
+      account.startDateKey ||
+      account.startDate ||
+      fallbackDate,
+  )
+
+export const calculateBachatInactiveGap = ({
+  account = {},
+  paymentDate = todayKey(),
+} = {}) => {
+  const lastPaymentDate = resolveBachatLastPaymentDate(account, paymentDate)
+  const daysDifference = daysBetween(lastPaymentDate, paymentDate)
+  const missedMonths =
+    daysDifference > BACHAT_RULES.daysPerMonth
+      ? Math.max(Math.floor(daysDifference / BACHAT_RULES.daysPerMonth), 1)
+      : 0
+
+  return {
+    lastPaymentDate,
+    daysDifference,
+    missedMonths,
+  }
 }
 
 const resolveBachatSummaryState = ({ summaryData = {}, nowDateKey = todayKey() } = {}) => {
@@ -700,21 +734,41 @@ export const listenBachatClosuresByCustomer = ({
 }
 
 export const getActiveBachatAccounts = async ({ currentUser, pageSize = 500 } = {}) => {
-  const constraints = [where('status', '==', 'active')]
+  const scopedConstraints = []
   if (currentUser?.role === USER_ROLES.collector) {
-    constraints.unshift(where('collectorId', '==', currentUser.userId))
+    scopedConstraints.push(where('collectorId', '==', currentUser.userId))
   }
-  constraints.push(orderBy('updatedAt', 'desc'))
-  const normalizedLimit = pageLimit(pageSize, 200, 500)
-  constraints.push(limit(normalizedLimit))
+  const normalizedLimit = pageLimit(pageSize, 200, 1000)
 
   try {
-    const snapshot = await getDocs(query(collection(db, COLLECTIONS.bachatAccounts), ...constraints))
-    const results = docsWithIds(snapshot)
+    const strictQuery = query(
+      collection(db, COLLECTIONS.bachatAccounts),
+      ...scopedConstraints,
+      where('status', '==', 'active'),
+      orderBy('updatedAt', 'desc'),
+      limit(normalizedLimit),
+    )
+    const relaxedQuery = query(
+      collection(db, COLLECTIONS.bachatAccounts),
+      ...scopedConstraints,
+      limit(normalizedLimit),
+    )
+    const [strictSnapshot, relaxedSnapshot] = await Promise.all([
+      getDocs(strictQuery),
+      getDocs(relaxedQuery),
+    ])
+    const merged = new Map()
+    docsWithIds(strictSnapshot).forEach((account) => {
+      if (isActiveBachatAccount(account)) merged.set(account.customerId || account.id, account)
+    })
+    docsWithIds(relaxedSnapshot).forEach((account) => {
+      if (isActiveBachatAccount(account)) merged.set(account.customerId || account.id, account)
+    })
+    const results = [...merged.values()]
     return {
       results,
       count: results.length,
-      cursor: snapshot.docs.length ? snapshot.docs[snapshot.docs.length - 1] : null,
+      cursor: strictSnapshot.docs.length ? strictSnapshot.docs[strictSnapshot.docs.length - 1] : null,
       hasMore: results.length >= normalizedLimit,
     }
   } catch (error) {
@@ -1051,10 +1105,15 @@ export const enrollCustomerToBachat = async ({
         pendingAmountPaise: 0,
         penaltyAmount: 0,
         penaltyAmountPaise: 0,
+        totalPenalty: 0,
+        totalPenaltyPaise: 0,
         paidMonths: 0,
         missedMonths: 0,
         overdueDays: 0,
+        lastPaymentDate: startDateKey,
         lastCollectionDate: null,
+        lastPenaltyAppliedDate: null,
+        penaltyStatus: 'none',
         collectorId,
         collectorName,
         status: 'active',
@@ -1157,36 +1216,53 @@ export const applyBachatCollectionV2InTransaction = async ({
   const currentTotalCollectedPaise = moneyToPaise(moneyValue(accountData, 'totalCollected'))
   const currentPendingPaise = moneyToPaise(moneyValue(accountData, 'pendingAmount'))
   const currentPenaltyPaise = moneyToPaise(moneyValue(accountData, 'penaltyAmount'))
+  const previousTotalPenaltyPaise =
+    moneyToPaise(moneyValue(accountData, 'totalPenalty')) ||
+    moneyToPaise(
+      calculateProgressiveBachatPenalty({
+        missedMonths: numberValue(accountData.missedMonths),
+        dailyAmount: moneyValue(accountData, 'dailyAmount'),
+      }),
+    )
+  const inactiveGap = calculateBachatInactiveGap({ account: accountData, paymentDate: date })
+  const inactiveMissedMonths = inactiveGap.missedMonths
+  const inactivePendingPaise = inactiveMissedMonths * monthlyAmountPaise
   const normalizedPenaltyRecoveredPaise = Math.max(Math.round(numberValue(penaltyRecoveredPaise)), 0)
-  const effectivePenaltyRecoveredPaise = Math.min(normalizedPenaltyRecoveredPaise, currentPenaltyPaise)
   const nextPendingPaise = Math.max(
-    currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
+    currentPendingPaise + inactivePendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
     0,
   )
   const nextTotalCollectedPaise = Math.max(currentTotalCollectedPaise + totalReceivedPaise, 0)
   const paidMonths = monthlyAmountPaise > 0 ? Math.floor(nextTotalCollectedPaise / monthlyAmountPaise) : 0
   const previousMissedMonths = Math.max(numberValue(accountData.missedMonths), 0)
-  const missedMonths =
-    nextPendingPaise <= 0
-      ? 0
-      : Math.max(
-          numberValue(accountData.missedMonths),
-          monthlyAmountPaise > 0 ? Math.ceil(nextPendingPaise / monthlyAmountPaise) : 0,
-        )
-  const overdueDays = nextPendingPaise <= 0 ? 0 : missedMonths * BACHAT_RULES.daysPerMonth
-  const computedPenaltyPaise = moneyToPaise(
+  const totalMissedMonths = previousMissedMonths + inactiveMissedMonths
+  const grossPenaltyPaise = moneyToPaise(
     calculateProgressiveBachatPenalty({
-      missedMonths,
-      pendingAmount: paiseToMoney(nextPendingPaise),
+      missedMonths: totalMissedMonths,
       dailyAmount: moneyValue(accountData, 'dailyAmount'),
     }),
   )
-  const nextPenaltyPaise = Math.max(computedPenaltyPaise - effectivePenaltyRecoveredPaise, 0)
+  const newPenaltyPaise = Math.max(grossPenaltyPaise - previousTotalPenaltyPaise, 0)
+  const effectivePenaltyRecoveredPaise = Math.min(
+    normalizedPenaltyRecoveredPaise,
+    currentPenaltyPaise + newPenaltyPaise,
+  )
+  const nextPenaltyPaise = Math.max(currentPenaltyPaise + newPenaltyPaise - effectivePenaltyRecoveredPaise, 0)
+  const shouldResetMissedTracking = nextPendingPaise <= 0 && nextPenaltyPaise <= 0
+  const missedMonths = shouldResetMissedTracking ? 0 : totalMissedMonths
+  const overdueDays = missedMonths * BACHAT_RULES.daysPerMonth
+  const accountTotalPenaltyPaise = shouldResetMissedTracking ? 0 : grossPenaltyPaise
   const nextPenaltyAmount = paiseToMoney(nextPenaltyPaise)
   const penaltyRecovered = paiseToMoney(effectivePenaltyRecoveredPaise)
   const penaltyRecoveredPaiseValue = effectivePenaltyRecoveredPaise
   const recoveryStatus =
-    nextPenaltyPaise <= 0 ? 'recovered' : effectivePenaltyRecoveredPaise > 0 ? 'partial' : 'pending'
+    grossPenaltyPaise <= 0
+      ? 'none'
+      : nextPenaltyPaise <= 0
+        ? 'recovered'
+        : effectivePenaltyRecoveredPaise > 0
+          ? 'partial'
+          : 'pending'
   const penaltyDeltaPaise = nextPenaltyPaise - currentPenaltyPaise
   const missedPaymentsDelta =
     previousMissedMonths <= 0 && missedMonths > 0
@@ -1225,6 +1301,15 @@ export const applyBachatCollectionV2InTransaction = async ({
     throw new Error('Bachat collection already exists for this customer on selected date.')
   }
   const nowKey = todayKey()
+  const previousLastPaymentDate = normalizeText(accountData.lastPaymentDate)
+  const nextLastPaymentDate =
+    totalReceivedPaise > 0
+      ? !previousLastPaymentDate || previousLastPaymentDate < date
+        ? date
+        : previousLastPaymentDate
+      : previousLastPaymentDate || inactiveGap.lastPaymentDate
+  const lastPenaltyAppliedDate =
+    inactiveMissedMonths > 0 ? date : normalizeText(accountData.lastPenaltyAppliedDate) || null
   const summaryReference = doc(db, COLLECTIONS.bachatSummary, 'main')
   const summarySnapshot = await transaction.get(summaryReference)
   const isToday = date === nowKey
@@ -1242,6 +1327,10 @@ export const applyBachatCollectionV2InTransaction = async ({
     penaltyRecoveredPaise: penaltyRecoveredPaiseValue,
     pendingCreated: paiseToMoney(pendingCreatedPaise),
     pendingCreatedPaise,
+    inactiveGapDays: inactiveGap.daysDifference,
+    inactiveMissedMonths,
+    inactivePendingCreated: paiseToMoney(inactivePendingPaise),
+    inactivePendingCreatedPaise: inactivePendingPaise,
     paymentDate: date,
     collectorId,
     collectorName,
@@ -1252,23 +1341,30 @@ export const applyBachatCollectionV2InTransaction = async ({
     createdAt: serverTimestamp(),
   })
 
-  if (missedMonths > 0 || nextPenaltyPaise > 0) {
-    const penaltyReference = doc(collection(db, COLLECTIONS.bachatPenalties))
+  if (grossPenaltyPaise > 0 || effectivePenaltyRecoveredPaise > 0 || previousMissedMonths > 0) {
+    const penaltyReference = doc(db, COLLECTIONS.bachatPenalties, normalizedCustomerId)
     transaction.set(penaltyReference, {
       penaltyId: penaltyReference.id,
       customerId: normalizedCustomerId,
-      missedMonths,
-      overdueDays,
+      missedMonths: totalMissedMonths,
+      overdueDays: totalMissedMonths * BACHAT_RULES.daysPerMonth,
       pendingAmount: paiseToMoney(nextPendingPaise),
       pendingAmountPaise: nextPendingPaise,
+      totalPenalty: paiseToMoney(grossPenaltyPaise),
+      totalPenaltyPaise: grossPenaltyPaise,
       penaltyAmount: nextPenaltyAmount,
       penaltyAmountPaise: nextPenaltyPaise,
       recoveredPenalty: penaltyRecovered,
       recoveredPenaltyPaise: penaltyRecoveredPaiseValue,
+      inactiveGapDays: inactiveGap.daysDifference,
+      inactiveMissedMonths,
+      lastPaymentDate: nextLastPaymentDate,
+      lastPenaltyAppliedDate,
+      penaltyStatus: recoveryStatus,
       recoveryStatus,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    })
+    }, { merge: true })
   }
 
   transaction.set(
@@ -1282,10 +1378,15 @@ export const applyBachatCollectionV2InTransaction = async ({
       pendingAmountPaise: nextPendingPaise,
       penaltyAmount: nextPenaltyAmount,
       penaltyAmountPaise: nextPenaltyPaise,
+      totalPenalty: paiseToMoney(accountTotalPenaltyPaise),
+      totalPenaltyPaise: accountTotalPenaltyPaise,
       paidMonths,
       missedMonths,
       overdueDays,
+      lastPaymentDate: nextLastPaymentDate,
       lastCollectionDate: date,
+      lastPenaltyAppliedDate,
+      penaltyStatus: recoveryStatus,
       closureEligibility,
       projectedClosurePayout: closurePreview.payoutAmount,
       projectedClosureRule: closurePreview.rule,
@@ -1388,35 +1489,68 @@ export const createBachatCollection = async ({
       }
 
       const expectedAmountPaise = moneyToPaise(moneyValue(accountData, 'dailyAmount'))
+      const monthlyAmountPaise = moneyToPaise(
+        moneyValue(accountData, 'monthlyAmount') ||
+          moneyValue(accountData, 'dailyAmount') * BACHAT_RULES.daysPerMonth,
+      )
       const currentPendingPaise = moneyToPaise(moneyValue(accountData, 'pendingAmount'))
       const currentPenaltyPaise = moneyToPaise(moneyValue(accountData, 'penaltyAmount'))
+      const inactiveGap = calculateBachatInactiveGap({ account: accountData, paymentDate })
+      const inactivePendingPaise = inactiveGap.missedMonths * monthlyAmountPaise
+      const pendingDueBeforeCollectionPaise = currentPendingPaise + inactivePendingPaise
+      const previousTotalPenaltyPaise =
+        moneyToPaise(moneyValue(accountData, 'totalPenalty')) ||
+        moneyToPaise(
+          calculateProgressiveBachatPenalty({
+            missedMonths: numberValue(accountData.missedMonths),
+            dailyAmount: moneyValue(accountData, 'dailyAmount'),
+          }),
+        )
+      const grossPenaltyPaise = moneyToPaise(
+        calculateProgressiveBachatPenalty({
+          missedMonths: numberValue(accountData.missedMonths) + inactiveGap.missedMonths,
+          dailyAmount: moneyValue(accountData, 'dailyAmount'),
+        }),
+      )
+      const availablePenaltyPaise =
+        currentPenaltyPaise + Math.max(grossPenaltyPaise - previousTotalPenaltyPaise, 0)
       const requestedAmountPaise = moneyToPaise(requestedAmount)
       const requestedPenaltyRecoveredPaise = Math.max(
         moneyToPaise(normalizeMoney(payload?.penaltyRecovered)),
         0,
       )
-      const maxAcceptedPaise = expectedAmountPaise + currentPendingPaise
+      const maxAcceptedPaise = expectedAmountPaise + pendingDueBeforeCollectionPaise
       if (requestedAmountPaise > maxAcceptedPaise) {
         throw new Error(
           `Amount exceeds allowed maximum for today. Maximum collectable is ${paiseToMoney(maxAcceptedPaise)}.`,
         )
       }
-      if (requestedPenaltyRecoveredPaise > currentPenaltyPaise) {
+      if (requestedPenaltyRecoveredPaise > availablePenaltyPaise) {
         throw new Error(
-          `Penalty exceeds available due. Maximum penalty collectable is ${paiseToMoney(currentPenaltyPaise)}.`,
+          `Penalty exceeds available due. Maximum penalty collectable is ${paiseToMoney(availablePenaltyPaise)}.`,
         )
       }
 
-      const amountCollectedPaise = Math.min(requestedAmountPaise, expectedAmountPaise)
-      const pendingRecoveredPaise = Math.min(
-        Math.max(requestedAmountPaise - expectedAmountPaise, 0),
-        currentPendingPaise,
-      )
+      const hasInactivePendingDue = inactivePendingPaise > 0
+      const pendingRecoveredPaise = hasInactivePendingDue
+        ? Math.min(requestedAmountPaise, pendingDueBeforeCollectionPaise)
+        : Math.min(
+            Math.max(requestedAmountPaise - expectedAmountPaise, 0),
+            pendingDueBeforeCollectionPaise,
+          )
+      const amountCollectedPaise = hasInactivePendingDue
+        ? Math.min(Math.max(requestedAmountPaise - pendingRecoveredPaise, 0), expectedAmountPaise)
+        : Math.min(requestedAmountPaise, expectedAmountPaise)
       const penaltyRecoveredPaise = requestedPenaltyRecoveredPaise
-      const pendingCreatedPaise = Math.max(expectedAmountPaise - amountCollectedPaise, 0)
+      const pendingCreatedPaise = hasInactivePendingDue
+        ? 0
+        : Math.max(expectedAmountPaise - amountCollectedPaise, 0)
       const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise + penaltyRecoveredPaise
-      const status =
-        amountCollectedPaise >= expectedAmountPaise
+      const status = hasInactivePendingDue
+        ? pendingRecoveredPaise >= pendingDueBeforeCollectionPaise
+          ? 'paid'
+          : 'partial'
+        : amountCollectedPaise >= expectedAmountPaise
           ? 'paid'
           : amountCollectedPaise > 0
             ? 'partial'
@@ -1457,6 +1591,7 @@ export const createBachatCollection = async ({
 
 export default {
   BACHAT_RULES,
+  calculateBachatInactiveGap,
   calculateProgressiveBachatPenalty,
   buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,

@@ -237,6 +237,74 @@ const customerRouteId = (customer) => customer?.id || customer?.customerId
 
 const customerLabel = (customer) => customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
 
+const getTodayPaidAmount = (collectionRecord = {}) => {
+  if (
+    collectionRecord.amountCollected !== undefined ||
+    collectionRecord.amountCollectedPaise !== undefined
+  ) {
+    return moneyValue(collectionRecord, 'amountCollected')
+  }
+  return moneyValue(collectionRecord, 'amount')
+}
+
+const buildBachatTargetRows = (accounts = [], todayCollections = []) => {
+  const collectionsByCustomer = new Map()
+  todayCollections.forEach((collectionRecord) => {
+    const customerId = collectionRecord.customerId || collectionRecord.id
+    if (customerId) collectionsByCustomer.set(customerId, collectionRecord)
+  })
+
+  return accounts
+    .map((account) => {
+      const customerId = account.customerId || account.id
+      const todayCollection = collectionsByCustomer.get(customerId)
+      const dailyAmount = moneyValue(account, 'dailyAmount')
+      const hasTodayCollection = Boolean(todayCollection)
+      const paidToday = todayCollection
+        ? Math.min(getTodayPaidAmount(todayCollection), dailyAmount)
+        : 0
+      const pendingToday = Math.max(dailyAmount - paidToday, 0)
+      const storedPending = moneyValue(account, 'pendingAmount')
+      const pendingRecoveredToday = moneyValue(todayCollection, 'pendingRecovered')
+      const inactivePendingCreatedToday = moneyValue(todayCollection, 'inactivePendingCreated')
+      const hasFreshTodayAccount = Boolean(todayCollection) && account.lastCollectionDate === todayCollection.paymentDate
+      const oldPending = todayCollection
+        ? hasFreshTodayAccount
+          ? Math.max(storedPending - pendingToday, 0)
+          : Math.max(storedPending - pendingRecoveredToday + inactivePendingCreatedToday, 0)
+        : storedPending
+      const totalPending = oldPending + pendingToday
+      const status = paidToday <= 0 && pendingToday > 0
+        ? 'Unpaid Today'
+        : pendingToday > 0
+          ? 'Partial Today'
+          : oldPending > 0
+            ? 'Old Pending'
+            : 'Paid'
+
+      return {
+        customerId,
+        customerName: customerLabel(account),
+        dailyAmount,
+        hasTodayCollection,
+        paidToday,
+        pendingToday,
+        oldPending,
+        totalPending,
+        penaltyAmount: moneyValue(account, 'penaltyAmount'),
+        status,
+        lastPaymentDate: account.lastPaymentDate || account.lastCollectionDate || '-',
+      }
+    })
+    .filter((row) => row.customerId)
+    .sort((first, second) => second.pendingToday - first.pendingToday || second.oldPending - first.oldPending)
+}
+
+const buildBachatPendingRows = (accounts = [], todayCollections = []) =>
+  buildBachatTargetRows(accounts, todayCollections)
+    .filter((row) => row.paidToday <= 0)
+    .sort((first, second) => second.totalPending - first.totalPending)
+
 function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabase, onClick }) {
   return (
     <button
@@ -310,6 +378,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [activeBachatAccounts, setActiveBachatAccounts] = useState([])
+  const [todayBachatCollections, setTodayBachatCollections] = useState([])
   const [activeBachatCustomerIds, setActiveBachatCustomerIds] = useState(new Set())
   const [activeBachatLoading, setActiveBachatLoading] = useState(true)
   const [insightModal, setInsightModal] = useState(createInsightModalState())
@@ -354,11 +423,19 @@ function BachatDashboardView({ user, openEnroll = false }) {
     let isMounted = true
     setActiveBachatLoading(true)
 
-    getActiveBachatAccounts({ currentUser: user, pageSize: 1000 })
-      .then((response) => {
+    Promise.all([
+      getActiveBachatAccounts({ currentUser: user, pageSize: 1000 }),
+      getBachatCollectionsByDate({
+        date: todayKey(),
+        currentUser: user,
+        pageSize: 1000,
+      }),
+    ])
+      .then(([accountResponse, collectionResponse]) => {
         if (!isMounted) return
-        const activeAccounts = response?.results || []
+        const activeAccounts = accountResponse?.results || []
         setActiveBachatAccounts(activeAccounts)
+        setTodayBachatCollections(collectionResponse?.results || [])
         const ids = new Set(
           activeAccounts
             .map((account) => account.customerId || account.id)
@@ -370,6 +447,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
         if (!isMounted) return
         toast.error(error?.message || 'Unable to load active Bachat accounts.')
         setActiveBachatAccounts([])
+        setTodayBachatCollections([])
         setActiveBachatCustomerIds(new Set())
       })
       .finally(() => {
@@ -386,6 +464,15 @@ function BachatDashboardView({ user, openEnroll = false }) {
     if (summary.todayTarget <= 0) return 0
     return clampPercent((summary.todayCollection / summary.todayTarget) * 100)
   }, [summary.collectionProgress, summary.todayCollection, summary.todayTarget])
+
+  const bachatPendingRows = useMemo(
+    () => buildBachatPendingRows(activeBachatAccounts, todayBachatCollections),
+    [activeBachatAccounts, todayBachatCollections],
+  )
+  const combinedPendingAmount = useMemo(
+    () => bachatPendingRows.reduce((sum, row) => sum + row.totalPending, 0),
+    [bachatPendingRows],
+  )
 
   useEffect(() => {
     const term = debouncedSearch.trim()
@@ -613,7 +700,73 @@ function BachatDashboardView({ user, openEnroll = false }) {
       return
     }
     if (cardKey === 'todayPendingAmount') {
-      staticListFromAccounts("Today's Pending Accounts", (account) => moneyValue(account, 'pendingAmount') > 0)
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title: "Today's Pending Accounts",
+        loading: true,
+        rows: [],
+      })
+      try {
+        const [accountResponse, collectionResponse] = await Promise.all([
+          getActiveBachatAccounts({ currentUser: user, pageSize: 1000 }),
+          getBachatCollectionsByDate({
+            date: todayKey(),
+            currentUser: user,
+            pageSize: 1000,
+          }),
+        ])
+        const activeAccounts = accountResponse?.results || []
+        const todayCollections = collectionResponse?.results || []
+        const rows = buildBachatPendingRows(activeAccounts, todayCollections)
+        setActiveBachatAccounts(activeAccounts)
+        setTodayBachatCollections(todayCollections)
+        setInsightModal({
+          open: true,
+          key: cardKey,
+          title: "Today's Pending Accounts",
+          loading: false,
+          rows,
+        })
+      } catch (error) {
+        setInsightModal((previous) => ({ ...previous, loading: false, rows: [] }))
+        toast.error(error?.message || 'Unable to load pending Bachat accounts.')
+      }
+      return
+    }
+    if (cardKey === 'todayTarget') {
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title: "Today's Target Accounts",
+        loading: true,
+        rows: [],
+      })
+      try {
+        const [accountResponse, collectionResponse] = await Promise.all([
+          getActiveBachatAccounts({ currentUser: user, pageSize: 1000 }),
+          getBachatCollectionsByDate({
+            date: todayKey(),
+            currentUser: user,
+            pageSize: 1000,
+          }),
+        ])
+        const activeAccounts = accountResponse?.results || []
+        const todayCollections = collectionResponse?.results || []
+        const rows = buildBachatTargetRows(activeAccounts, todayCollections)
+        setActiveBachatAccounts(activeAccounts)
+        setTodayBachatCollections(todayCollections)
+        setInsightModal({
+          open: true,
+          key: cardKey,
+          title: "Today's Target Accounts",
+          loading: false,
+          rows,
+        })
+      } catch (error) {
+        setInsightModal((previous) => ({ ...previous, loading: false, rows: [] }))
+        toast.error(error?.message || "Unable to load today's target accounts.")
+      }
       return
     }
     if (cardKey === 'penalties') {
@@ -629,7 +782,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       return
     }
 
-    if (cardKey === 'todayCollection' || cardKey === 'todayTarget' || cardKey === 'collectionProgress') {
+    if (cardKey === 'todayCollection' || cardKey === 'collectionProgress') {
       setInsightModal({
         open: true,
         key: cardKey,
@@ -748,13 +901,19 @@ function BachatDashboardView({ user, openEnroll = false }) {
       { key: 'todayTarget', label: "Today's Target", value: summary.todayTarget, currency: true, icon: FiCalendar },
       { key: 'todayCollection', label: "Today's Collection", value: summary.todayCollection, currency: true, icon: MdOutlinePayments },
       { key: 'collectionProgress', label: 'Collection Progress', value: `${Math.round(todayCollectionProgress)}%`, icon: FiTrendingUp },
-      { key: 'todayPendingAmount', label: "Today's Pending Amount", value: summary.todayPendingAmount, currency: true, icon: FiAlertTriangle },
+      {
+        key: 'todayPendingAmount',
+        label: "Today's Pending Amount",
+        value: activeBachatLoading ? summary.todayPendingAmount : combinedPendingAmount,
+        currency: true,
+        icon: FiAlertTriangle,
+      },
       { key: 'penalties', label: 'Penalties', value: summary.penalties, currency: true, icon: FiAlertTriangle },
       { key: 'missedPayments', label: 'Missed Payments', value: summary.missedPayments, icon: FiCalendar },
       { key: 'maturedAccounts', label: 'Matured Accounts', value: summary.maturedAccounts, icon: FiClock },
       { key: 'prematureClosures', label: 'Premature Closures', value: summary.prematureClosures, icon: FiTrendingDown },
     ],
-    [summary, todayCollectionProgress],
+    [activeBachatLoading, combinedPendingAmount, summary, todayCollectionProgress],
   )
 
   return (
@@ -877,7 +1036,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
         isOpen={insightModal.open}
         title={insightModal.title || 'Card Details'}
         onClose={closeInsightModal}
-        sizeClass="max-w-4xl"
+        sizeClass={['todayPendingAmount', 'todayTarget'].includes(insightModal.key) ? 'max-w-6xl' : 'max-w-4xl'}
       >
         <div className="space-y-3">
           {insightModal.loading && (
@@ -890,7 +1049,91 @@ function BachatDashboardView({ user, openEnroll = false }) {
               Premature closure count is summary-driven. Detailed closure listing is available in customer profiles.
             </p>
           )}
-          {!insightModal.loading && insightModal.rows.length > 0 && (
+          {!insightModal.loading && insightModal.rows.length > 0 && insightModal.key === 'todayPendingAmount' && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Customer Name</th>
+                    <th className="px-3 py-2">Customer ID</th>
+                    <th className="px-3 py-2">Daily Amount</th>
+                    <th className="px-3 py-2">Paid Today</th>
+                    <th className="px-3 py-2">Pending Today</th>
+                    <th className="px-3 py-2">Old Pending</th>
+                    <th className="px-3 py-2">Total Pending</th>
+                    <th className="px-3 py-2">Last Payment Date</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {insightModal.rows.map((row) => (
+                    <tr key={row.customerId}>
+                      <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.dailyAmount)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.paidToday)}</td>
+                      <td className="px-3 py-2 text-amber-700">{formatCurrency(row.pendingToday)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.oldPending)}</td>
+                      <td className="px-3 py-2 font-semibold text-slate-950">{formatCurrency(row.totalPending)}</td>
+                      <td className="px-3 py-2 text-slate-600">{row.lastPaymentDate}</td>
+                      <td className="px-3 py-2 text-slate-600">{row.status}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="btn-secondary !py-1.5"
+                          onClick={() => openBachatProfile({ customerId: row.customerId })}
+                        >
+                          Open Profile
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {!insightModal.loading && insightModal.rows.length > 0 && insightModal.key === 'todayTarget' && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Customer Name</th>
+                    <th className="px-3 py-2">Customer ID</th>
+                    <th className="px-3 py-2">Daily Target</th>
+                    <th className="px-3 py-2">Paid Today</th>
+                    <th className="px-3 py-2">Balance Today</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {insightModal.rows.map((row) => (
+                    <tr key={row.customerId}>
+                      <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.dailyAmount)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.paidToday)}</td>
+                      <td className="px-3 py-2 text-amber-700">{formatCurrency(row.pendingToday)}</td>
+                      <td className="px-3 py-2 text-slate-600">{row.status}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="btn-secondary !py-1.5"
+                          onClick={() => openBachatProfile({ customerId: row.customerId })}
+                        >
+                          Open Profile
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {!insightModal.loading &&
+            insightModal.rows.length > 0 &&
+            !['todayPendingAmount', 'todayTarget'].includes(insightModal.key) && (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -931,7 +1174,11 @@ function BachatDashboardView({ user, openEnroll = false }) {
           )}
           {!insightModal.loading && !insightModal.rows.length && insightModal.key !== 'prematureClosures' && (
             <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
-              No records available for this card right now.
+              {insightModal.key === 'todayPendingAmount'
+                ? 'No pending collections today'
+                : insightModal.key === 'todayTarget'
+                  ? "No target accounts available today"
+                : 'No records available for this card right now.'}
             </p>
           )}
         </div>
