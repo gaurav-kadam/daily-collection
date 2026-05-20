@@ -19,6 +19,7 @@ const navigation = {
   admin: [
     { to: '/dashboard', label: 'Dashboard', icon: FiGrid },
     { to: '/customers', label: 'Customers', icon: FiUsers },
+    { to: '/bachat/collect', label: 'Bachat Daily Collection', icon: MdOutlinePayments },
     { to: '/collections', label: 'Daily Collections', icon: MdOutlinePayments },
     { to: '/pending-customers', label: 'Pending Customers', icon: FiAlertTriangle },
     { to: '/loans', label: 'Loans', icon: MdOutlineAccountBalanceWallet },
@@ -31,6 +32,7 @@ const navigation = {
   ],
   collector: [
     { to: '/dashboard', label: 'Dashboard', icon: FiGrid },
+    { to: '/bachat/collect', label: 'Bachat Daily Collection', icon: MdOutlinePayments },
     { to: '/collections', label: 'Daily Collections', icon: MdOutlinePayments },
     { to: '/pending-customers', label: 'Pending Customers', icon: FiAlertTriangle },
     { to: '/emi-payments', label: 'EMI Payments', icon: FiCreditCard },

@@ -17,6 +17,7 @@ const titleMap = {
   '/dashboard/investments': 'Investments Dashboard',
   '/customers': 'Customers',
   '/my-customers': 'My Customers',
+  '/bachat/collect': 'Bachat Daily Collection',
   '/collections': 'Daily Collections',
   '/collections/today': 'Today Collection',
   '/collection-history': 'Collection History',

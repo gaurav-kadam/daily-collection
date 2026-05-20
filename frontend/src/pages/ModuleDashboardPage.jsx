@@ -20,8 +20,6 @@ import {
   FiClock,
   FiCreditCard,
   FiDatabase,
-  FiEdit2,
-  FiEye,
   FiSearch,
   FiLayers,
   FiShield,
@@ -32,28 +30,21 @@ import {
 import { MdOutlinePayments } from 'react-icons/md'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import Modal from '../components/Modal'
-import StatusBadge from '../components/customers/StatusBadge'
 import useAuth from '../hooks/useAuth'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   BACHAT_RULES,
-  computeBachatClosurePreview,
   enrollCustomerToBachat,
-  getBachatAccount,
   getBachatEnrollmentStatus,
-  getBachatCollectionsByCustomer,
   listenBachatSummary,
 } from '../services/bachatService'
-import { getOptimizedImageUrl } from '../services/cloudinaryService'
 import customerService from '../services/customerService'
 import { listenDashboardStats, syncFinanceState } from '../services/dashboardService'
 import {
   moneyValue,
   numberValue,
   todayKey,
-  USER_ROLES,
 } from '../services/firestoreService'
-import { formatDate } from '../utils/date'
 import { formatCurrency } from '../utils/format'
 
 const moduleConfig = {
@@ -253,11 +244,9 @@ function ModuleDashboardSkeleton() {
 }
 
 const BACHAT_DURATION_MONTHS = BACHAT_RULES.defaultDurationMonths
-const BACHAT_INTEREST_ELIGIBILITY_MONTHS = BACHAT_RULES.eligibilityMonths
 
 const customerRouteId = (customer) => customer?.id || customer?.customerId
 
-const customerLookupIds = (customer) => [...new Set([customer?.id, customer?.customerId].filter(Boolean).map(String))]
 const customerLabel = (customer) => customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
 
 function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabase }) {
@@ -276,81 +265,6 @@ function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabas
       </div>
     </article>
   )
-}
-
-function DetailItem({ label, value }) {
-  return (
-    <div>
-      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</dt>
-      <dd className="mt-1 text-sm font-semibold text-slate-900">{value || '-'}</dd>
-    </div>
-  )
-}
-
-function BachatSummaryTile({ label, value, tone = 'slate' }) {
-  const tones = {
-    slate: 'bg-slate-50 text-slate-950',
-    emerald: 'bg-emerald-50 text-emerald-900',
-    amber: 'bg-amber-50 text-amber-900',
-    rose: 'bg-rose-50 text-rose-900',
-    cyan: 'bg-cyan-50 text-cyan-900',
-  }
-
-  return (
-    <div className={`rounded-lg p-4 ${tones[tone] || tones.slate}`}>
-      <p className="text-xs font-semibold uppercase tracking-wide opacity-70">{label}</p>
-      <p className="mt-2 font-display text-xl font-bold">{value}</p>
-    </div>
-  )
-}
-
-function calculateBachatDetails(account) {
-  const dailyAmount = moneyValue(account, 'dailyAmount')
-  const monthlyAmount = dailyAmount * 30
-  const totalDeposited = moneyValue(account, 'totalCollected')
-  const pendingAmount = moneyValue(account, 'pendingAmount')
-  const penaltyAmount = moneyValue(account, 'penaltyAmount')
-  const pendingDays = numberValue(account.overdueDays)
-  const startDate = account.startDateKey || account.startDate || todayKey()
-  const maturityDate = account.endDateKey || account.endDate || todayKey()
-  const completedMonths = Math.min(
-    numberValue(account.paidMonths) + numberValue(account.missedMonths),
-    BACHAT_DURATION_MONTHS,
-  )
-  const remainingMonths = Math.max(BACHAT_DURATION_MONTHS - completedMonths, 0)
-  const paidMonths = numberValue(account.paidMonths)
-  const missedMonths = numberValue(account.missedMonths)
-  const nextDueDate = account.lastCollectionDate || todayKey()
-  const totalDepositTarget =
-    moneyValue(account, 'totalTargetAmount') || monthlyAmount * BACHAT_DURATION_MONTHS
-  const maturityReward = moneyValue(account, 'maturityReward')
-  const maturityAmount = totalDepositTarget + maturityReward
-  const paymentPercentage = totalDepositTarget ? (totalDeposited / totalDepositTarget) * 100 : 0
-  const prematureClosureEligibility =
-    paidMonths >= BACHAT_INTEREST_ELIGIBILITY_MONTHS
-      ? 'Eligible for additional benefit on closure'
-      : 'Original deposited amount only'
-
-  return {
-    dailyAmount,
-    monthlyAmount,
-    totalDeposited,
-    pendingAmount,
-    penaltyAmount,
-    pendingDays,
-    startDate,
-    maturityDate,
-    completedMonths,
-    remainingMonths,
-    paidMonths,
-    missedMonths,
-    nextDueDate,
-    totalDepositTarget,
-    maturityReward,
-    maturityAmount,
-    paymentPercentage,
-    prematureClosureEligibility,
-  }
 }
 
 const enrollmentDefaults = {
@@ -373,228 +287,15 @@ const createEnrollmentModalState = (overrides = {}) => ({
   ...overrides,
 })
 
-function BachatCustomerModal({ accountState, user, onClose, onOpenEnroll }) {
-  if (!accountState?.customer) return null
-
-  const { customer, account, collections, sectionStatus } = accountState
-  const isEnrolled = Boolean(account)
-  if (!isEnrolled) {
-    return (
-      <Modal
-        isOpen={Boolean(customer)}
-        title="Bachat Account Workstation"
-        onClose={onClose}
-        sizeClass="max-w-xl"
-      >
-        <div className="space-y-4">
-          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            Customer not enrolled in Bachat module.
-          </p>
-          <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
-            <button type="button" onClick={onClose} className="btn-secondary">
-              Close
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenEnroll(customer)}
-              className="btn-primary gap-2"
-            >
-              Add Customer To Bachat
-            </button>
-          </div>
-        </div>
-      </Modal>
-    )
-  }
-
-  const details = calculateBachatDetails(account)
-  const closurePreview = computeBachatClosurePreview(account)
-  const profilePhotoUrl = getOptimizedImageUrl(
-    customer.profilePhoto || customer.profilePhotoUrl || customer.photoUrl || customer.photo,
-    { width: 192, height: 192, crop: 'fill' },
-  )
-  const routeId = customerRouteId(customer)
-  const isAdmin = user?.role === USER_ROLES.admin
-
-  return (
-    <Modal
-      isOpen={Boolean(customer)}
-      title="Bachat Account Workstation"
-      onClose={onClose}
-      sizeClass="max-w-6xl"
-      panelClass="max-h-[90vh] overflow-y-auto"
-    >
-      <div className="space-y-5">
-        <section className="grid gap-4 lg:grid-cols-[300px_1fr]">
-          <aside className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-            <div className="flex flex-col items-center text-center">
-              <div className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-lg bg-white ring-1 ring-slate-200">
-                {profilePhotoUrl ? (
-                  <img
-                    src={profilePhotoUrl}
-                    alt={customer.shopName || customer.ownerName}
-                    className="h-full w-full object-cover"
-                    loading="lazy"
-                  />
-                ) : (
-                  <FiUsers className="text-3xl text-slate-400" />
-                )}
-              </div>
-              <h3 className="mt-4 font-display text-xl font-bold text-slate-950">
-                {customerLabel(customer)}
-              </h3>
-              <p className="mt-1 text-sm text-slate-500">{customer.customerId || customer.id}</p>
-              <div className="mt-3">
-                <StatusBadge status={customer.status} />
-              </div>
-            </div>
-
-            <dl className="mt-5 space-y-4">
-              <DetailItem label="Customer Name" value={customerLabel(customer)} />
-              <DetailItem label="Mobile Number" value={customer.mobile} />
-              <DetailItem label="Address" value={customer.address || customer.area} />
-              <DetailItem label="Enrolled / Start Date" value={formatDate(details.startDate)} />
-            </dl>
-          </aside>
-
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <BachatSummaryTile label="Daily Amount" value={formatCurrency(details.dailyAmount)} />
-              <BachatSummaryTile label="Monthly Amount" value={formatCurrency(details.monthlyAmount)} tone="cyan" />
-              <BachatSummaryTile label="Maturity Amount" value={formatCurrency(details.maturityAmount)} tone="emerald" />
-              <BachatSummaryTile label="Total Deposited" value={formatCurrency(details.totalDeposited)} tone="emerald" />
-            </div>
-
-            <section className="rounded-lg border border-slate-200 p-4">
-              <h3 className="section-title mb-4">Account Details</h3>
-              <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                <DetailItem label="Start Date" value={formatDate(details.startDate)} />
-                <DetailItem label="Maturity Date" value={formatDate(details.maturityDate)} />
-                <DetailItem label="Total Duration" value={`${BACHAT_DURATION_MONTHS} months`} />
-                <DetailItem label="Completed Months" value={details.completedMonths} />
-                <DetailItem label="Remaining Months" value={details.remainingMonths} />
-                <DetailItem label="Last Collection Date" value={formatDate(details.nextDueDate)} />
-              </dl>
-            </section>
-          </div>
-        </section>
-
-        <section className="grid gap-4 lg:grid-cols-2">
-          <article className="rounded-lg border border-slate-200 p-4">
-            <h3 className="section-title mb-4">Penalty / Payment</h3>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <BachatSummaryTile label="Pending Amount" value={formatCurrency(details.pendingAmount)} tone="amber" />
-              <BachatSummaryTile label="Penalty Amount" value={formatCurrency(details.penaltyAmount)} tone="rose" />
-              <BachatSummaryTile label="Missed Months" value={details.missedMonths} tone="amber" />
-              <BachatSummaryTile label="Paid Months" value={details.paidMonths} tone="emerald" />
-              <BachatSummaryTile label="Payment Percentage" value={`${Math.round(details.paymentPercentage)}%`} tone="cyan" />
-              <BachatSummaryTile label="Account Status" value={customer.status || 'active'} />
-            </div>
-          </article>
-
-          <article className="rounded-lg border border-slate-200 p-4">
-            <h3 className="section-title mb-4">Maturity</h3>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <BachatSummaryTile label="Deposit Target" value={formatCurrency(details.totalDepositTarget)} />
-              <BachatSummaryTile label="Maturity Reward" value={formatCurrency(details.maturityReward)} tone="emerald" />
-              <BachatSummaryTile label="Maturity Amount" value={formatCurrency(details.maturityAmount)} tone="emerald" />
-              <BachatSummaryTile label="Premature Closure" value={details.prematureClosureEligibility} tone="amber" />
-              <BachatSummaryTile
-                label="Closure Payout Today"
-                value={formatCurrency(closurePreview.payoutAmount)}
-                tone="cyan"
-              />
-            </div>
-            <p className="mt-4 rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              No partial withdrawals are supported for Bachat accounts.
-            </p>
-          </article>
-        </section>
-
-        <section className="rounded-lg border border-slate-200">
-          <div className="border-b border-slate-200 px-4 py-3">
-            <h3 className="section-title">Recent Collections</h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">Amount</th>
-                  <th className="px-4 py-3">Collector</th>
-                  <th className="px-4 py-3">Payment Type</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 bg-white">
-                {sectionStatus.loading ? (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan="4">
-                      Loading recent collections...
-                    </td>
-                  </tr>
-                ) : collections.length ? (
-                  collections.map((collection) => (
-                    <tr key={collection.txId || collection.collectionId || collection.id}>
-                      <td className="px-4 py-3 text-slate-700">{formatDate(collection.paymentDate || collection.date)}</td>
-                      <td className="px-4 py-3 font-semibold text-slate-950">
-                        {formatCurrency(moneyValue(collection, 'amount'))}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{collection.collectorName || '-'}</td>
-                      <td className="px-4 py-3 text-slate-600">{collection.paymentMethod || '-'}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan="4">
-                      {sectionStatus.error || 'No collections recorded for this customer yet.'}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <div className="flex flex-col gap-2 border-t border-slate-200 pt-4 sm:flex-row sm:flex-wrap sm:justify-end">
-          <Link to={`/bachat/profile/${routeId}`} className="btn-secondary gap-2">
-            <FiEye />
-            View Bachat Profile
-          </Link>
-          <Link to="/pending-customers" className="btn-secondary gap-2">
-            <FiCalendar />
-            View Missed Payments
-          </Link>
-          <Link to="/penalties" className="btn-secondary gap-2">
-            <FiAlertTriangle />
-            View Penalty Details
-          </Link>
-          {isAdmin ? (
-            <Link to={`/customers/${routeId}/edit`} className="btn-secondary gap-2">
-              <FiEdit2 />
-              Edit Account
-            </Link>
-          ) : (
-            <button type="button" className="btn-secondary gap-2 opacity-60" disabled>
-              <FiEdit2 />
-              Edit Account
-            </button>
-          )}
-          <button type="button" onClick={onClose} className="btn-primary">
-            Close
-          </button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-function BachatDashboardView({ moduleSummary, user }) {
+function BachatDashboardView({ user }) {
   const navigate = useNavigate()
   const [summary, setSummary] = useState({
     activeAccounts: 0,
+    activeDailyExpected: 0,
     totalCollected: 0,
     penalties: 0,
     todayCollection: 0,
+    todayPendingAmount: 0,
     monthlyCollection: 0,
     missedPayments: 0,
     maturedAccounts: 0,
@@ -604,7 +305,6 @@ function BachatDashboardView({ moduleSummary, user }) {
   const [searchResults, setSearchResults] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
-  const [selectedState, setSelectedState] = useState(null)
   const [enrollModal, setEnrollModal] = useState(createEnrollmentModalState())
   const [enrollSearch, setEnrollSearch] = useState('')
   const [enrollResults, setEnrollResults] = useState([])
@@ -618,9 +318,11 @@ function BachatDashboardView({ moduleSummary, user }) {
       (nextSummary) =>
         setSummary({
           activeAccounts: numberValue(nextSummary.activeAccounts),
+          activeDailyExpected: moneyValue(nextSummary, 'activeDailyExpected'),
           totalCollected: moneyValue(nextSummary, 'totalCollected'),
           penalties: moneyValue(nextSummary, 'penalties'),
           todayCollection: moneyValue(nextSummary, 'todayCollection'),
+          todayPendingAmount: moneyValue(nextSummary, 'todayPendingAmount'),
           monthlyCollection: moneyValue(nextSummary, 'monthlyCollection'),
           missedPayments: numberValue(nextSummary.missedPayments),
           maturedAccounts: numberValue(nextSummary.maturedAccounts),
@@ -629,6 +331,11 @@ function BachatDashboardView({ moduleSummary, user }) {
       () => {},
     )
   }, [user])
+
+  const todayCollectionProgress = useMemo(() => {
+    if (summary.activeDailyExpected <= 0) return 0
+    return clampPercent((summary.todayCollection / summary.activeDailyExpected) * 100)
+  }, [summary.activeDailyExpected, summary.todayCollection])
 
   useEffect(() => {
     const term = debouncedSearch.trim()
@@ -790,56 +497,15 @@ function BachatDashboardView({ moduleSummary, user }) {
     closeEnrollmentModal()
     if (routeId) {
       navigate(`/bachat/profile/${routeId}`)
-      return
     }
-    await openCustomer(enrollModal.customer)
   }
 
-  const openCustomer = async (customer) => {
-    setSelectedState({
-      customer,
-      account: null,
-      collections: [],
-      sectionStatus: { loading: true, error: '' },
-    })
+  const openBachatProfile = (customer) => {
+    const routeId = customerRouteId(customer)
+    if (!routeId) return
     setSearch('')
     setSearchResults([])
-
-    const ids = customerLookupIds(customer)
-    const primaryId = ids[0]
-    try {
-      const account = await getBachatAccount(primaryId)
-      if (!account) {
-        setSelectedState({
-          customer,
-          account: null,
-          collections: [],
-          sectionStatus: { loading: false, error: '' },
-        })
-        return
-      }
-      const collections = await getBachatCollectionsByCustomer({
-        customerId: primaryId,
-        currentUser: user,
-        pageSize: 12,
-      })
-      setSelectedState({
-        customer,
-        account,
-        collections: collections.results || [],
-        sectionStatus: { loading: false, error: '' },
-      })
-    } catch {
-      setSelectedState({
-        customer,
-        account: null,
-        collections: [],
-        sectionStatus: {
-          loading: false,
-          error: 'Recent collections could not be loaded right now.',
-        },
-      })
-    }
+    navigate(`/bachat/profile/${routeId}`)
   }
 
   const updateEnrollForm = (field, value) => {
@@ -892,9 +558,10 @@ function BachatDashboardView({ moduleSummary, user }) {
         currentUser: user,
       })
       toast.success('Customer enrolled in Bachat module.')
+      const routeId = customerRouteId(enrollModal.customer)
       closeEnrollmentModal()
-      if (selectedState?.customer) {
-        openCustomer(selectedState.customer)
+      if (routeId) {
+        navigate(`/bachat/profile/${routeId}`)
       }
     } catch (error) {
       setEnrollModal((previous) => ({
@@ -905,13 +572,20 @@ function BachatDashboardView({ moduleSummary, user }) {
     }
   }
 
-  const operationalCards = [
-    { label: 'Active Accounts', value: summary.activeAccounts, icon: FiUsers },
-    { label: 'Matured Payouts', value: summary.maturedAccounts, icon: FiClock },
-    { label: 'Penalties', value: summary.penalties, currency: true, icon: FiAlertTriangle },
-    { label: 'Missed Payments', value: summary.missedPayments, icon: FiCalendar },
-    { label: 'Premature Closures', value: summary.prematureClosures, icon: FiTrendingDown },
-  ]
+  const operationalCards = useMemo(
+    () => [
+      { label: 'Active Accounts', value: summary.activeAccounts, icon: FiUsers },
+      { label: "Today's Target", value: summary.activeDailyExpected, currency: true, icon: FiCalendar },
+      { label: "Today's Collection", value: summary.todayCollection, currency: true, icon: MdOutlinePayments },
+      { label: 'Collection Progress', value: `${Math.round(todayCollectionProgress)}%`, icon: FiTrendingUp },
+      { label: "Today's Pending Amount", value: summary.todayPendingAmount, currency: true, icon: FiAlertTriangle },
+      { label: 'Penalties', value: summary.penalties, currency: true, icon: FiAlertTriangle },
+      { label: 'Missed Payments', value: summary.missedPayments, icon: FiCalendar },
+      { label: 'Matured Accounts', value: summary.maturedAccounts, icon: FiClock },
+      { label: 'Premature Closures', value: summary.prematureClosures, icon: FiTrendingDown },
+    ],
+    [summary, todayCollectionProgress],
+  )
 
   return (
     <div className="space-y-6">
@@ -925,9 +599,14 @@ function BachatDashboardView({ moduleSummary, user }) {
           <h2 className="page-title">Bachat Dashboard</h2>
           <p className="mt-1 text-sm text-slate-500">Module enrollment and account operations.</p>
         </div>
-        <button type="button" className="btn-primary gap-2" onClick={() => openEnrollmentModal()}>
-          Add Customer To Bachat
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link to="/bachat/collect" className="btn-secondary gap-2">
+            Open Bachat Daily Collection
+          </Link>
+          <button type="button" className="btn-primary gap-2" onClick={() => openEnrollmentModal()}>
+            Add Customer To Bachat
+          </button>
+        </div>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
@@ -939,10 +618,19 @@ function BachatDashboardView({ moduleSummary, user }) {
                 Total Bachat Amount
               </p>
               <p className="mt-3 font-display text-4xl font-bold md:text-5xl">
-                {formatCurrency(summary.totalCollected || moduleSummary?.amount || 0)}
+                {formatCurrency(summary.totalCollected)}
               </p>
               <p className="mt-3 text-sm font-medium text-cyan-100">
-                Monthly collection {formatCurrency(summary.monthlyCollection)}
+                Monthly collection {formatCurrency(summary.monthlyCollection)} | Target {formatCurrency(summary.activeDailyExpected)}
+              </p>
+              <div className="mt-4 h-2 rounded-full bg-white/20">
+                <div
+                  className="h-2 rounded-full bg-cyan-300 transition-all"
+                  style={{ width: `${Math.round(todayCollectionProgress)}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-cyan-100">
+                Today progress: {Math.round(todayCollectionProgress)}% ({formatCurrency(summary.todayCollection)} / {formatCurrency(summary.activeDailyExpected)})
               </p>
             </div>
           </div>
@@ -972,7 +660,7 @@ function BachatDashboardView({ moduleSummary, user }) {
                 <button
                   key={customerRouteId(customer)}
                   type="button"
-                  onClick={() => openCustomer(customer)}
+                  onClick={() => openBachatProfile(customer)}
                   className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 text-left transition last:border-b-0 hover:bg-cyan-50"
                 >
                   <span className="min-w-0">
@@ -998,21 +686,11 @@ function BachatDashboardView({ moduleSummary, user }) {
         </article>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {operationalCards.map((card) => (
           <BachatStatCard key={card.label} {...card} />
         ))}
       </section>
-
-      <BachatCustomerModal
-        accountState={selectedState}
-        user={user}
-        onClose={() => setSelectedState(null)}
-        onOpenEnroll={(customer) => {
-          setSelectedState(null)
-          openEnrollmentModal(customer)
-        }}
-      />
 
       <Modal
         isOpen={enrollModal.open}

@@ -19,6 +19,7 @@ import { auth, db } from '../firebase/firebase'
 import {
   buildModuleFlags,
   COLLECTIONS,
+  PAYMENT_METHODS,
   USER_ROLES,
   addMonthsKey,
   dateKeyFromDate,
@@ -89,20 +90,127 @@ const debugBachatPermission = ({
 
 const emptyBachatSummary = {
   activeAccounts: 0,
+  activeDailyExpected: 0,
+  activeDailyExpectedPaise: 0,
   totalCollected: 0,
   totalCollectedPaise: 0,
   penalties: 0,
   penaltiesPaise: 0,
   todayCollection: 0,
   todayCollectionPaise: 0,
+  todayPendingAmount: 0,
+  todayPendingAmountPaise: 0,
   monthlyCollection: 0,
   monthlyCollectionPaise: 0,
   missedPayments: 0,
   maturedAccounts: 0,
   prematureClosures: 0,
+  summaryDayKey: '',
+  summaryMonthKey: '',
 }
 
 const monthKey = (dateKey) => String(dateKey || '').slice(0, 7)
+const nonNegativeInteger = (value) => Math.max(Math.round(numberValue(value)), 0)
+const normalizePaymentMethod = (value) => {
+  const method = normalizeText(value).toLowerCase()
+  return PAYMENT_METHODS.includes(method) ? method : 'cash'
+}
+
+const resolveBachatSummaryState = ({ summaryData = {}, nowDateKey = todayKey() } = {}) => {
+  const expectedDayKey = normalizeText(nowDateKey) || todayKey()
+  const expectedMonthKey = monthKey(expectedDayKey)
+  const summaryDayKey = normalizeText(summaryData.summaryDayKey)
+  const summaryMonthKey = normalizeText(summaryData.summaryMonthKey)
+
+  const todayCollectionPaise = moneyToPaise(moneyValue(summaryData, 'todayCollection'))
+  const monthlyCollectionPaise = moneyToPaise(moneyValue(summaryData, 'monthlyCollection'))
+  const totalCollectedPaise = moneyToPaise(moneyValue(summaryData, 'totalCollected'))
+  const penaltiesPaise = moneyToPaise(moneyValue(summaryData, 'penalties'))
+  const activeDailyExpectedPaise = moneyToPaise(moneyValue(summaryData, 'activeDailyExpected'))
+
+  const normalizedTodayCollectionPaise = summaryDayKey === expectedDayKey ? todayCollectionPaise : 0
+  const normalizedMonthlyCollectionPaise =
+    summaryMonthKey === expectedMonthKey ? monthlyCollectionPaise : 0
+
+  return {
+    activeAccounts: nonNegativeInteger(summaryData.activeAccounts),
+    activeDailyExpectedPaise: Math.max(activeDailyExpectedPaise, 0),
+    totalCollectedPaise: Math.max(totalCollectedPaise, 0),
+    penaltiesPaise: Math.max(penaltiesPaise, 0),
+    todayCollectionPaise: Math.max(normalizedTodayCollectionPaise, 0),
+    monthlyCollectionPaise: Math.max(normalizedMonthlyCollectionPaise, 0),
+    missedPayments: nonNegativeInteger(summaryData.missedPayments),
+    maturedAccounts: nonNegativeInteger(summaryData.maturedAccounts),
+    prematureClosures: nonNegativeInteger(summaryData.prematureClosures),
+    summaryDayKey: expectedDayKey,
+    summaryMonthKey: expectedMonthKey,
+  }
+}
+
+const buildBachatSummaryPatch = ({
+  summaryData = {},
+  nowDateKey = todayKey(),
+  collectionDateKey = nowDateKey,
+  deltas = {},
+} = {}) => {
+  const state = resolveBachatSummaryState({ summaryData, nowDateKey })
+  const activeAccounts = Math.max(state.activeAccounts + numberValue(deltas.activeAccounts), 0)
+  const activeDailyExpectedPaise = Math.max(
+    state.activeDailyExpectedPaise + moneyToPaise(numberValue(deltas.activeDailyExpected)),
+    0,
+  )
+  const totalCollectedPaise = Math.max(
+    state.totalCollectedPaise + moneyToPaise(numberValue(deltas.totalCollected)),
+    0,
+  )
+  const penaltiesPaise = Math.max(
+    state.penaltiesPaise + moneyToPaise(numberValue(deltas.penalties)),
+    0,
+  )
+  const missedPayments = Math.max(state.missedPayments + numberValue(deltas.missedPayments), 0)
+  const maturedAccounts = Math.max(state.maturedAccounts + numberValue(deltas.maturedAccounts), 0)
+  const prematureClosures = Math.max(
+    state.prematureClosures + numberValue(deltas.prematureClosures),
+    0,
+  )
+
+  const includeTodayCollection = normalizeText(collectionDateKey) === state.summaryDayKey
+  const includeMonthlyCollection =
+    monthKey(collectionDateKey) === state.summaryMonthKey
+  const todayCollectionPaise = Math.max(
+    state.todayCollectionPaise +
+      (includeTodayCollection ? moneyToPaise(numberValue(deltas.todayCollection)) : 0),
+    0,
+  )
+  const monthlyCollectionPaise = Math.max(
+    state.monthlyCollectionPaise +
+      (includeMonthlyCollection ? moneyToPaise(numberValue(deltas.monthlyCollection)) : 0),
+    0,
+  )
+  const todayPendingAmountPaise = Math.max(activeDailyExpectedPaise - todayCollectionPaise, 0)
+
+  return {
+    activeAccounts,
+    activeDailyExpected: paiseToMoney(activeDailyExpectedPaise),
+    activeDailyExpectedPaise,
+    totalCollected: paiseToMoney(totalCollectedPaise),
+    totalCollectedPaise,
+    penalties: paiseToMoney(penaltiesPaise),
+    penaltiesPaise,
+    todayCollection: paiseToMoney(todayCollectionPaise),
+    todayCollectionPaise,
+    todayPendingAmount: paiseToMoney(todayPendingAmountPaise),
+    todayPendingAmountPaise,
+    monthlyCollection: paiseToMoney(monthlyCollectionPaise),
+    monthlyCollectionPaise,
+    missedPayments: Math.round(missedPayments),
+    maturedAccounts: Math.round(maturedAccounts),
+    prematureClosures: Math.round(prematureClosures),
+    summaryDayKey: state.summaryDayKey,
+    summaryMonthKey: state.summaryMonthKey,
+    updatedAt: serverTimestamp(),
+  }
+}
 
 const normalizeCustomerIdentity = (customer = {}) => ({
   customerId: normalizeText(customer.customerId || customer.id),
@@ -188,7 +296,31 @@ export const listenBachatSummary = (callback, onError) =>
   onSnapshot(
     doc(db, COLLECTIONS.bachatSummary, 'main'),
     (snapshot) => {
-      callback(snapshot.exists() ? { id: snapshot.id, ...emptyBachatSummary, ...snapshot.data() } : { id: 'main', ...emptyBachatSummary })
+      const rawSummary = snapshot.exists() ? snapshot.data() : {}
+      const normalized = resolveBachatSummaryState({
+        summaryData: { ...emptyBachatSummary, ...rawSummary },
+        nowDateKey: todayKey(),
+      })
+      const todayPendingAmountPaise = Math.max(
+        normalized.activeDailyExpectedPaise - normalized.todayCollectionPaise,
+        0,
+      )
+
+      callback({
+        id: snapshot.exists() ? snapshot.id : 'main',
+        ...emptyBachatSummary,
+        ...rawSummary,
+        activeDailyExpected: paiseToMoney(normalized.activeDailyExpectedPaise),
+        activeDailyExpectedPaise: normalized.activeDailyExpectedPaise,
+        todayCollection: paiseToMoney(normalized.todayCollectionPaise),
+        todayCollectionPaise: normalized.todayCollectionPaise,
+        monthlyCollection: paiseToMoney(normalized.monthlyCollectionPaise),
+        monthlyCollectionPaise: normalized.monthlyCollectionPaise,
+        todayPendingAmount: paiseToMoney(todayPendingAmountPaise),
+        todayPendingAmountPaise,
+        summaryDayKey: normalized.summaryDayKey,
+        summaryMonthKey: normalized.summaryMonthKey,
+      })
     },
     (error) => {
       debugBachatPermission({
@@ -412,12 +544,18 @@ export const getActiveBachatAccounts = async ({ currentUser, pageSize = 500 } = 
     constraints.unshift(where('collectorId', '==', currentUser.userId))
   }
   constraints.push(orderBy('updatedAt', 'desc'))
-  constraints.push(limit(pageLimit(pageSize, 200, 500)))
+  const normalizedLimit = pageLimit(pageSize, 200, 500)
+  constraints.push(limit(normalizedLimit))
 
   try {
     const snapshot = await getDocs(query(collection(db, COLLECTIONS.bachatAccounts), ...constraints))
     const results = docsWithIds(snapshot)
-    return { results, count: results.length }
+    return {
+      results,
+      count: results.length,
+      cursor: snapshot.docs.length ? snapshot.docs[snapshot.docs.length - 1] : null,
+      hasMore: results.length >= normalizedLimit,
+    }
   } catch (error) {
     debugBachatPermission({
       operation: 'query',
@@ -428,6 +566,168 @@ export const getActiveBachatAccounts = async ({ currentUser, pageSize = 500 } = 
     })
     throw error
   }
+}
+
+export const getBachatCollectionCandidateStatus = async ({
+  customerId,
+  currentUser,
+} = {}) => {
+  const normalizedCustomerId = normalizeText(customerId)
+  if (!normalizedCustomerId) {
+    throw new Error('Customer ID is required.')
+  }
+
+  const customerSnapshot = await getDoc(customerRef(normalizedCustomerId))
+  if (!customerSnapshot.exists()) {
+    throw new Error('Customer record was not found.')
+  }
+
+  const customerData = customerSnapshot.data()
+  const account = await getBachatAccount(normalizedCustomerId)
+  const moduleFlags = buildModuleFlags(customerData.moduleFlags)
+  const hasBachatFlag = Boolean(moduleFlags.bachat)
+  const hasBachatAccount = Boolean(account)
+  const isAccountActive = hasBachatAccount && normalizeText(account.status || 'active') === 'active'
+  const canCollect = hasBachatFlag && isAccountActive
+  const reason = !hasBachatFlag
+    ? 'flag_disabled'
+    : !hasBachatAccount
+      ? 'account_missing'
+      : !isAccountActive
+        ? 'account_inactive'
+        : 'ready'
+
+  debugBachatPermission({
+    operation: 'collection-candidate-status',
+    collectionName: COLLECTIONS.customers,
+    docPath: `${COLLECTIONS.customers}/${normalizedCustomerId}`,
+    currentUser,
+    extra: {
+      hasBachatFlag,
+      hasBachatAccount,
+      accountStatus: normalizeText(account?.status || ''),
+      reason,
+    },
+  })
+
+  return {
+    customer: {
+      id: customerSnapshot.id,
+      ...customerData,
+      moduleFlags,
+    },
+    account,
+    hasBachatFlag,
+    hasBachatAccount,
+    isAccountActive,
+    canCollect,
+    reason,
+  }
+}
+
+export const getActiveBachatAccountsPage = async ({
+  currentUser,
+  pageSize = 25,
+  cursor = null,
+} = {}) => {
+  const constraints = [where('status', '==', 'active')]
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.unshift(where('collectorId', '==', currentUser.userId))
+  }
+  constraints.push(orderBy('updatedAt', 'desc'))
+  if (cursor) {
+    constraints.push(startAfter(cursor))
+  }
+  const normalizedLimit = pageLimit(pageSize, 25, 100)
+  constraints.push(limit(normalizedLimit))
+
+  try {
+    const snapshot = await getDocs(query(collection(db, COLLECTIONS.bachatAccounts), ...constraints))
+    const results = docsWithIds(snapshot)
+    return {
+      results,
+      count: results.length,
+      cursor: snapshot.docs.length ? snapshot.docs[snapshot.docs.length - 1] : null,
+      hasMore: results.length >= normalizedLimit,
+    }
+  } catch (error) {
+    debugBachatPermission({
+      operation: 'query',
+      collectionName: COLLECTIONS.bachatAccounts,
+      docPath: COLLECTIONS.bachatAccounts,
+      currentUser,
+      error,
+    })
+    throw error
+  }
+}
+
+export const getBachatCollectionsByDate = async ({
+  date = todayKey(),
+  currentUser,
+  pageSize = 500,
+} = {}) => {
+  const constraints = [where('paymentDate', '==', date)]
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.push(where('collectorId', '==', currentUser.userId))
+  }
+  constraints.push(limit(pageLimit(pageSize, 200, 1000)))
+
+  try {
+    const snapshot = await getDocs(query(collection(db, COLLECTIONS.bachatCollections), ...constraints))
+    const results = docsWithIds(snapshot)
+    return { results, count: results.length }
+  } catch (error) {
+    debugBachatPermission({
+      operation: 'query',
+      collectionName: COLLECTIONS.bachatCollections,
+      docPath: COLLECTIONS.bachatCollections,
+      currentUser,
+      error,
+    })
+    throw error
+  }
+}
+
+export const getLatestBachatPenaltiesForCustomers = async ({
+  customerIds = [],
+  currentUser,
+} = {}) => {
+  const ids = [...new Set(customerIds.map((value) => normalizeText(value)).filter(Boolean))]
+  if (!ids.length) return {}
+
+  const results = await Promise.allSettled(
+    ids.map(async (customerId) => {
+      const snapshot = await getDocs(
+        query(
+          collection(db, COLLECTIONS.bachatPenalties),
+          where('customerId', '==', customerId),
+          orderBy('updatedAt', 'desc'),
+          limit(1),
+        ),
+      )
+      if (snapshot.empty) return [customerId, null]
+      return [customerId, { id: snapshot.docs[0].id, ...snapshot.docs[0].data() }]
+    }),
+  )
+
+  const penaltiesMap = {}
+  results.forEach((entry) => {
+    if (entry.status === 'fulfilled') {
+      const [customerId, record] = entry.value
+      penaltiesMap[customerId] = record
+    } else {
+      debugBachatPermission({
+        operation: 'query',
+        collectionName: COLLECTIONS.bachatPenalties,
+        docPath: COLLECTIONS.bachatPenalties,
+        currentUser,
+        error: entry.reason,
+      })
+    }
+  })
+
+  return penaltiesMap
 }
 
 export const getBachatEnrollmentStatus = async ({
@@ -528,9 +828,10 @@ export const enrollCustomerToBachat = async ({
 
   try {
     await runTransaction(db, async (transaction) => {
-      const [customerSnapshot, accountSnapshot] = await Promise.all([
+      const [customerSnapshot, accountSnapshot, summarySnapshot] = await Promise.all([
         transaction.get(customerReference),
         transaction.get(accountReference),
+        transaction.get(summaryReference),
       ])
 
       if (!customerSnapshot.exists()) {
@@ -611,10 +912,14 @@ export const enrollCustomerToBachat = async ({
       )
       transaction.set(
         summaryReference,
-        {
-          activeAccounts: increment(1),
-          updatedAt: serverTimestamp(),
-        },
+        buildBachatSummaryPatch({
+          summaryData: summarySnapshot.exists() ? summarySnapshot.data() : {},
+          nowDateKey: nowKey,
+          deltas: {
+            activeAccounts: 1,
+            activeDailyExpected: dailyAmount,
+          },
+        }),
         { merge: true },
       )
       transaction.set(
@@ -666,6 +971,7 @@ export const applyBachatCollectionV2InTransaction = async ({
   remarks,
   amountCollectedPaise,
   pendingRecoveredPaise,
+  penaltyRecoveredPaise = 0,
   pendingCreatedPaise,
   totalReceivedPaise,
   status,
@@ -687,6 +993,8 @@ export const applyBachatCollectionV2InTransaction = async ({
   const currentTotalCollectedPaise = moneyToPaise(moneyValue(accountData, 'totalCollected'))
   const currentPendingPaise = moneyToPaise(moneyValue(accountData, 'pendingAmount'))
   const currentPenaltyPaise = moneyToPaise(moneyValue(accountData, 'penaltyAmount'))
+  const normalizedPenaltyRecoveredPaise = Math.max(Math.round(numberValue(penaltyRecoveredPaise)), 0)
+  const effectivePenaltyRecoveredPaise = Math.min(normalizedPenaltyRecoveredPaise, currentPenaltyPaise)
   const nextPendingPaise = Math.max(
     currentPendingPaise - pendingRecoveredPaise + pendingCreatedPaise,
     0,
@@ -702,12 +1010,17 @@ export const applyBachatCollectionV2InTransaction = async ({
           monthlyAmountPaise > 0 ? Math.ceil(nextPendingPaise / monthlyAmountPaise) : 0,
         )
   const overdueDays = nextPendingPaise <= 0 ? 0 : missedMonths * BACHAT_RULES.daysPerMonth
-  const nextPenaltyAmount = calculateProgressiveBachatPenalty({
-    missedMonths,
-    pendingAmount: paiseToMoney(nextPendingPaise),
-    dailyAmount: moneyValue(accountData, 'dailyAmount'),
-  })
-  const nextPenaltyPaise = moneyToPaise(nextPenaltyAmount)
+  const computedPenaltyPaise = moneyToPaise(
+    calculateProgressiveBachatPenalty({
+      missedMonths,
+      pendingAmount: paiseToMoney(nextPendingPaise),
+      dailyAmount: moneyValue(accountData, 'dailyAmount'),
+    }),
+  )
+  const nextPenaltyPaise = Math.max(computedPenaltyPaise - effectivePenaltyRecoveredPaise, 0)
+  const nextPenaltyAmount = paiseToMoney(nextPenaltyPaise)
+  const penaltyRecovered = paiseToMoney(effectivePenaltyRecoveredPaise)
+  const penaltyRecoveredPaiseValue = effectivePenaltyRecoveredPaise
   const penaltyDeltaPaise = nextPenaltyPaise - currentPenaltyPaise
   const missedPaymentsDelta =
     previousMissedMonths <= 0 && missedMonths > 0
@@ -740,10 +1053,15 @@ export const applyBachatCollectionV2InTransaction = async ({
     throw new Error('Collector authentication context is missing.')
   }
 
-  const transactionReference = doc(collection(db, COLLECTIONS.bachatCollections))
+  const transactionReference = doc(db, COLLECTIONS.bachatCollections, `${normalizedCustomerId}_${date}`)
+  const existingSameDaySnapshot = await transaction.get(transactionReference)
+  if (existingSameDaySnapshot.exists()) {
+    throw new Error('Bachat collection already exists for this customer on selected date.')
+  }
   const nowKey = todayKey()
+  const summaryReference = doc(db, COLLECTIONS.bachatSummary, 'main')
+  const summarySnapshot = await transaction.get(summaryReference)
   const isToday = date === nowKey
-  const isCurrentMonth = monthKey(date) === monthKey(nowKey)
 
   transaction.set(transactionReference, {
     txId: transactionReference.id,
@@ -754,6 +1072,8 @@ export const applyBachatCollectionV2InTransaction = async ({
     amountCollectedPaise,
     pendingRecovered: paiseToMoney(pendingRecoveredPaise),
     pendingRecoveredPaise,
+    penaltyRecovered,
+    penaltyRecoveredPaise: penaltyRecoveredPaiseValue,
     pendingCreated: paiseToMoney(pendingCreatedPaise),
     pendingCreatedPaise,
     paymentDate: date,
@@ -777,6 +1097,8 @@ export const applyBachatCollectionV2InTransaction = async ({
       pendingAmountPaise: nextPendingPaise,
       penaltyAmount: nextPenaltyAmount,
       penaltyAmountPaise: nextPenaltyPaise,
+      recoveredPenalty: penaltyRecovered,
+      recoveredPenaltyPaise: penaltyRecoveredPaiseValue,
       recoveryStatus: nextPendingPaise > 0 ? 'pending' : 'recovered',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -807,19 +1129,19 @@ export const applyBachatCollectionV2InTransaction = async ({
   )
 
   transaction.set(
-    doc(db, COLLECTIONS.bachatSummary, 'main'),
-    {
-      totalCollected: increment(paiseToMoney(totalReceivedPaise)),
-      totalCollectedPaise: increment(totalReceivedPaise),
-      penalties: increment(paiseToMoney(penaltyDeltaPaise)),
-      penaltiesPaise: increment(penaltyDeltaPaise),
-      todayCollection: increment(isToday ? paiseToMoney(totalReceivedPaise) : 0),
-      todayCollectionPaise: increment(isToday ? totalReceivedPaise : 0),
-      monthlyCollection: increment(isCurrentMonth ? paiseToMoney(totalReceivedPaise) : 0),
-      monthlyCollectionPaise: increment(isCurrentMonth ? totalReceivedPaise : 0),
-      missedPayments: increment(missedPaymentsDelta),
-      updatedAt: serverTimestamp(),
-    },
+    summaryReference,
+    buildBachatSummaryPatch({
+      summaryData: summarySnapshot.exists() ? summarySnapshot.data() : {},
+      nowDateKey: nowKey,
+      collectionDateKey: date,
+      deltas: {
+        totalCollected: paiseToMoney(totalReceivedPaise),
+        penalties: paiseToMoney(penaltyDeltaPaise),
+        todayCollection: isToday ? paiseToMoney(totalReceivedPaise) : 0,
+        monthlyCollection: paiseToMoney(totalReceivedPaise),
+        missedPayments: missedPaymentsDelta,
+      },
+    }),
     { merge: true },
   )
 
@@ -842,6 +1164,131 @@ export const applyBachatCollectionV2InTransaction = async ({
   return { applied: true, txId: transactionReference.id }
 }
 
+export const createBachatCollection = async ({
+  customerId,
+  payload,
+  currentUser,
+} = {}) => {
+  const normalizedCustomerId = normalizeText(customerId || payload?.customerId)
+  if (!normalizedCustomerId) {
+    throw new Error('Customer ID is required.')
+  }
+
+  const paymentDate = dateKeyFromDate(payload?.date || payload?.paymentDate || todayKey())
+  const paymentMethod = normalizePaymentMethod(payload?.paymentMethod)
+  const notes = normalizeText(payload?.notes || payload?.remarks)
+  const requestedAmount = normalizeMoney(payload?.amount)
+  if (requestedAmount <= 0) {
+    throw new Error('Collection amount must be greater than zero.')
+  }
+
+  const duplicateSnapshot = await getDocs(
+    query(
+      collection(db, COLLECTIONS.bachatCollections),
+      where('customerId', '==', normalizedCustomerId),
+      where('paymentDate', '==', paymentDate),
+      limit(1),
+    ),
+  )
+  if (!duplicateSnapshot.empty) {
+    throw new Error('Bachat collection already exists for this customer on selected date.')
+  }
+
+  const customerReference = customerRef(normalizedCustomerId)
+  const accountReference = doc(db, COLLECTIONS.bachatAccounts, normalizedCustomerId)
+
+  try {
+    let transactionResult = { applied: false, txId: '' }
+    await runTransaction(db, async (transaction) => {
+      const [customerSnapshot, accountSnapshot] = await Promise.all([
+        transaction.get(customerReference),
+        transaction.get(accountReference),
+      ])
+      if (!customerSnapshot.exists()) {
+        throw new Error('Customer record was not found.')
+      }
+      if (!accountSnapshot.exists()) {
+        throw new Error('Bachat account was not found for this customer.')
+      }
+
+      const customerData = customerSnapshot.data()
+      const accountData = accountSnapshot.data()
+      const moduleFlags = buildModuleFlags(customerData.moduleFlags)
+      if (!moduleFlags.bachat) {
+        throw new Error('Customer is not enrolled in Bachat module.')
+      }
+      if (normalizeText(accountData.status || 'active') !== 'active') {
+        throw new Error('Bachat account is not active.')
+      }
+
+      const expectedAmountPaise = moneyToPaise(moneyValue(accountData, 'dailyAmount'))
+      const currentPendingPaise = moneyToPaise(moneyValue(accountData, 'pendingAmount'))
+      const currentPenaltyPaise = moneyToPaise(moneyValue(accountData, 'penaltyAmount'))
+      const requestedAmountPaise = moneyToPaise(requestedAmount)
+      const requestedPenaltyRecoveredPaise = Math.max(
+        moneyToPaise(normalizeMoney(payload?.penaltyRecovered)),
+        0,
+      )
+      const maxAcceptedPaise = expectedAmountPaise + currentPendingPaise
+      if (requestedAmountPaise > maxAcceptedPaise) {
+        throw new Error(
+          `Amount exceeds allowed maximum for today. Maximum collectable is ${paiseToMoney(maxAcceptedPaise)}.`,
+        )
+      }
+      if (requestedPenaltyRecoveredPaise > currentPenaltyPaise) {
+        throw new Error(
+          `Penalty exceeds available due. Maximum penalty collectable is ${paiseToMoney(currentPenaltyPaise)}.`,
+        )
+      }
+
+      const amountCollectedPaise = Math.min(requestedAmountPaise, expectedAmountPaise)
+      const pendingRecoveredPaise = Math.min(
+        Math.max(requestedAmountPaise - expectedAmountPaise, 0),
+        currentPendingPaise,
+      )
+      const penaltyRecoveredPaise = requestedPenaltyRecoveredPaise
+      const pendingCreatedPaise = Math.max(expectedAmountPaise - amountCollectedPaise, 0)
+      const totalReceivedPaise = amountCollectedPaise + pendingRecoveredPaise + penaltyRecoveredPaise
+      const status =
+        amountCollectedPaise >= expectedAmountPaise
+          ? 'paid'
+          : amountCollectedPaise > 0
+            ? 'partial'
+            : 'pending'
+
+      transactionResult = await applyBachatCollectionV2InTransaction({
+        transaction,
+        customerId: normalizedCustomerId,
+        customerData,
+        currentUser,
+        date: paymentDate,
+        paymentMethod,
+        remarks: notes,
+        amountCollectedPaise,
+        pendingRecoveredPaise,
+        penaltyRecoveredPaise,
+        pendingCreatedPaise,
+        totalReceivedPaise,
+        status,
+      })
+    })
+    return transactionResult
+  } catch (error) {
+    debugBachatPermission({
+      operation: 'transaction:createBachatCollection',
+      collectionName: COLLECTIONS.bachatCollections,
+      docPath: `${COLLECTIONS.bachatCollections}/${normalizedCustomerId}_${paymentDate}`,
+      currentUser,
+      error,
+      extra: {
+        customerId: normalizedCustomerId,
+        paymentDate,
+      },
+    })
+    throw error
+  }
+}
+
 export default {
   BACHAT_RULES,
   calculateProgressiveBachatPenalty,
@@ -855,6 +1302,11 @@ export default {
   listenBachatPenaltiesByCustomer,
   listenBachatClosuresByCustomer,
   getActiveBachatAccounts,
+  getActiveBachatAccountsPage,
+  getBachatCollectionsByDate,
+  getLatestBachatPenaltiesForCustomers,
+  getBachatCollectionCandidateStatus,
   enrollCustomerToBachat,
   applyBachatCollectionV2InTransaction,
+  createBachatCollection,
 }

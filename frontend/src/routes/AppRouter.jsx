@@ -13,6 +13,7 @@ const AddCustomerPage = lazy(pageLoaders.addCustomer)
 const EditCustomerPage = lazy(pageLoaders.editCustomer)
 const CustomerDetailsPage = lazy(pageLoaders.customerDetails)
 const BachatCustomerProfilePage = lazy(pageLoaders.bachatCustomerProfile)
+const BachatCollectionPage = lazy(pageLoaders.bachatCollection)
 const DailyCollectionPage = lazy(pageLoaders.dailyCollection)
 const CollectionHistoryPage = lazy(pageLoaders.collectionHistory)
 const TodayCollectionSummaryPage = lazy(pageLoaders.todayCollectionSummary)
@@ -44,6 +45,7 @@ function AppRouter() {
               <Route path="/my-customers" element={<CustomersPage />} />
               <Route path="/customers/:customerId" element={<CustomerDetailsPage />} />
               <Route path="/bachat/profile/:customerId" element={<BachatCustomerProfilePage />} />
+              <Route path="/bachat/collect" element={<BachatCollectionPage />} />
               <Route path="/collections" element={<DailyCollectionPage />} />
               <Route path="/collections/today" element={<TodayCollectionSummaryPage />} />
               <Route path="/collection-history" element={<CollectionHistoryPage />} />
