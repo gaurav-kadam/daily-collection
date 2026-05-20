@@ -94,14 +94,21 @@ const emptyBachatSummary = {
   activeDailyExpectedPaise: 0,
   totalCollected: 0,
   totalCollectedPaise: 0,
+  totalBachatAmount: 0,
+  totalBachatAmountPaise: 0,
   penalties: 0,
   penaltiesPaise: 0,
   todayCollection: 0,
   todayCollectionPaise: 0,
+  todayTarget: 0,
+  todayTargetPaise: 0,
   todayPendingAmount: 0,
   todayPendingAmountPaise: 0,
   monthlyCollection: 0,
   monthlyCollectionPaise: 0,
+  monthlyTarget: 0,
+  monthlyTargetPaise: 0,
+  collectionProgress: 0,
   missedPayments: 0,
   maturedAccounts: 0,
   prematureClosures: 0,
@@ -111,6 +118,14 @@ const emptyBachatSummary = {
 
 const monthKey = (dateKey) => String(dateKey || '').slice(0, 7)
 const nonNegativeInteger = (value) => Math.max(Math.round(numberValue(value)), 0)
+const clampPercent = (value) => Math.max(Math.min(numberValue(value), 100), 0)
+const daysInMonthFromDateKey = (dateKey = todayKey()) => {
+  const [yearPart, monthPart] = String(dateKey || todayKey()).split('-')
+  const year = Math.max(numberValue(yearPart), 1970)
+  const month = Math.max(numberValue(monthPart), 1)
+  const utcDate = new Date(Date.UTC(year, month, 0))
+  return Math.max(numberValue(utcDate.getUTCDate()), 28)
+}
 const normalizePaymentMethod = (value) => {
   const method = normalizeText(value).toLowerCase()
   return PAYMENT_METHODS.includes(method) ? method : 'cash'
@@ -187,7 +202,15 @@ const buildBachatSummaryPatch = ({
       (includeMonthlyCollection ? moneyToPaise(numberValue(deltas.monthlyCollection)) : 0),
     0,
   )
+  const todayTargetPaise = Math.max(activeDailyExpectedPaise, 0)
+  const monthlyTargetPaise = Math.max(
+    activeDailyExpectedPaise * daysInMonthFromDateKey(state.summaryDayKey),
+    0,
+  )
   const todayPendingAmountPaise = Math.max(activeDailyExpectedPaise - todayCollectionPaise, 0)
+  const collectionProgress = todayTargetPaise <= 0
+    ? 0
+    : clampPercent((todayCollectionPaise / todayTargetPaise) * 100)
 
   return {
     activeAccounts,
@@ -195,14 +218,21 @@ const buildBachatSummaryPatch = ({
     activeDailyExpectedPaise,
     totalCollected: paiseToMoney(totalCollectedPaise),
     totalCollectedPaise,
+    totalBachatAmount: paiseToMoney(totalCollectedPaise),
+    totalBachatAmountPaise: totalCollectedPaise,
     penalties: paiseToMoney(penaltiesPaise),
     penaltiesPaise,
     todayCollection: paiseToMoney(todayCollectionPaise),
     todayCollectionPaise,
+    todayTarget: paiseToMoney(todayTargetPaise),
+    todayTargetPaise,
     todayPendingAmount: paiseToMoney(todayPendingAmountPaise),
     todayPendingAmountPaise,
     monthlyCollection: paiseToMoney(monthlyCollectionPaise),
     monthlyCollectionPaise,
+    monthlyTarget: paiseToMoney(monthlyTargetPaise),
+    monthlyTargetPaise,
+    collectionProgress,
     missedPayments: Math.round(missedPayments),
     maturedAccounts: Math.round(maturedAccounts),
     prematureClosures: Math.round(prematureClosures),
@@ -305,19 +335,42 @@ export const listenBachatSummary = (callback, onError) =>
         normalized.activeDailyExpectedPaise - normalized.todayCollectionPaise,
         0,
       )
+      const todayTargetPaise = Math.max(normalized.activeDailyExpectedPaise, 0)
+      const monthlyTargetPaise = Math.max(
+        normalized.activeDailyExpectedPaise * daysInMonthFromDateKey(normalized.summaryDayKey),
+        0,
+      )
+      const collectionProgress = todayTargetPaise <= 0
+        ? 0
+        : clampPercent((normalized.todayCollectionPaise / todayTargetPaise) * 100)
 
       callback({
         id: snapshot.exists() ? snapshot.id : 'main',
         ...emptyBachatSummary,
         ...rawSummary,
+        activeAccounts: normalized.activeAccounts,
         activeDailyExpected: paiseToMoney(normalized.activeDailyExpectedPaise),
         activeDailyExpectedPaise: normalized.activeDailyExpectedPaise,
+        totalCollected: paiseToMoney(normalized.totalCollectedPaise),
+        totalCollectedPaise: normalized.totalCollectedPaise,
+        totalBachatAmount: paiseToMoney(normalized.totalCollectedPaise),
+        totalBachatAmountPaise: normalized.totalCollectedPaise,
+        penalties: paiseToMoney(normalized.penaltiesPaise),
+        penaltiesPaise: normalized.penaltiesPaise,
         todayCollection: paiseToMoney(normalized.todayCollectionPaise),
         todayCollectionPaise: normalized.todayCollectionPaise,
+        todayTarget: paiseToMoney(todayTargetPaise),
+        todayTargetPaise,
         monthlyCollection: paiseToMoney(normalized.monthlyCollectionPaise),
         monthlyCollectionPaise: normalized.monthlyCollectionPaise,
+        monthlyTarget: paiseToMoney(monthlyTargetPaise),
+        monthlyTargetPaise,
         todayPendingAmount: paiseToMoney(todayPendingAmountPaise),
         todayPendingAmountPaise,
+        collectionProgress,
+        missedPayments: normalized.missedPayments,
+        maturedAccounts: normalized.maturedAccounts,
+        prematureClosures: normalized.prematureClosures,
         summaryDayKey: normalized.summaryDayKey,
         summaryMonthKey: normalized.summaryMonthKey,
       })

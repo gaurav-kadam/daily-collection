@@ -35,6 +35,8 @@ import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   BACHAT_RULES,
   enrollCustomerToBachat,
+  getActiveBachatAccounts,
+  getBachatCollectionsByDate,
   getBachatEnrollmentStatus,
   listenBachatSummary,
 } from '../services/bachatService'
@@ -249,9 +251,13 @@ const customerRouteId = (customer) => customer?.id || customer?.customerId
 
 const customerLabel = (customer) => customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
 
-function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabase }) {
+function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabase, onClick }) {
   return (
-    <article className="card p-4">
+    <button
+      type="button"
+      className="card w-full p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+      onClick={onClick}
+    >
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-slate-500">{label}</p>
@@ -263,7 +269,7 @@ function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabas
           <Icon />
         </span>
       </div>
-    </article>
+    </button>
   )
 }
 
@@ -287,24 +293,40 @@ const createEnrollmentModalState = (overrides = {}) => ({
   ...overrides,
 })
 
+const createInsightModalState = (overrides = {}) => ({
+  open: false,
+  key: '',
+  title: '',
+  loading: false,
+  rows: [],
+  ...overrides,
+})
+
 function BachatDashboardView({ user }) {
   const navigate = useNavigate()
   const [summary, setSummary] = useState({
     activeAccounts: 0,
-    activeDailyExpected: 0,
-    totalCollected: 0,
-    penalties: 0,
-    todayCollection: 0,
-    todayPendingAmount: 0,
+    totalBachatAmount: 0,
     monthlyCollection: 0,
+    monthlyTarget: 0,
+    todayCollection: 0,
+    todayTarget: 0,
+    todayPendingAmount: 0,
+    collectionProgress: 0,
+    penalties: 0,
     missedPayments: 0,
     maturedAccounts: 0,
     prematureClosures: 0,
   })
+  const [summaryLoading, setSummaryLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
+  const [activeBachatAccounts, setActiveBachatAccounts] = useState([])
+  const [activeBachatCustomerIds, setActiveBachatCustomerIds] = useState(new Set())
+  const [activeBachatLoading, setActiveBachatLoading] = useState(true)
+  const [insightModal, setInsightModal] = useState(createInsightModalState())
   const [enrollModal, setEnrollModal] = useState(createEnrollmentModalState())
   const [enrollSearch, setEnrollSearch] = useState('')
   const [enrollResults, setEnrollResults] = useState([])
@@ -314,32 +336,73 @@ function BachatDashboardView({ user }) {
 
   useEffect(() => {
     if (!user) return undefined
+    setSummaryLoading(true)
     return listenBachatSummary(
-      (nextSummary) =>
+      (nextSummary) => {
         setSummary({
           activeAccounts: numberValue(nextSummary.activeAccounts),
-          activeDailyExpected: moneyValue(nextSummary, 'activeDailyExpected'),
-          totalCollected: moneyValue(nextSummary, 'totalCollected'),
-          penalties: moneyValue(nextSummary, 'penalties'),
-          todayCollection: moneyValue(nextSummary, 'todayCollection'),
-          todayPendingAmount: moneyValue(nextSummary, 'todayPendingAmount'),
+          totalBachatAmount: moneyValue(nextSummary, 'totalBachatAmount') || moneyValue(nextSummary, 'totalCollected'),
           monthlyCollection: moneyValue(nextSummary, 'monthlyCollection'),
+          monthlyTarget: moneyValue(nextSummary, 'monthlyTarget'),
+          todayCollection: moneyValue(nextSummary, 'todayCollection'),
+          todayTarget: moneyValue(nextSummary, 'todayTarget') || moneyValue(nextSummary, 'activeDailyExpected'),
+          todayPendingAmount: moneyValue(nextSummary, 'todayPendingAmount'),
+          collectionProgress: numberValue(nextSummary.collectionProgress),
+          penalties: moneyValue(nextSummary, 'penalties'),
           missedPayments: numberValue(nextSummary.missedPayments),
           maturedAccounts: numberValue(nextSummary.maturedAccounts),
           prematureClosures: numberValue(nextSummary.prematureClosures),
-        }),
-      () => {},
+        })
+        setSummaryLoading(false)
+      },
+      (error) => {
+        toast.error(error?.message || 'Unable to load Bachat summary.')
+        setSummaryLoading(false)
+      },
     )
   }, [user])
 
+  useEffect(() => {
+    if (!user) return undefined
+    let isMounted = true
+    setActiveBachatLoading(true)
+
+    getActiveBachatAccounts({ currentUser: user, pageSize: 1000 })
+      .then((response) => {
+        if (!isMounted) return
+        const activeAccounts = response?.results || []
+        setActiveBachatAccounts(activeAccounts)
+        const ids = new Set(
+          activeAccounts
+            .map((account) => account.customerId || account.id)
+            .filter(Boolean),
+        )
+        setActiveBachatCustomerIds(ids)
+      })
+      .catch((error) => {
+        if (!isMounted) return
+        toast.error(error?.message || 'Unable to load active Bachat accounts.')
+        setActiveBachatAccounts([])
+        setActiveBachatCustomerIds(new Set())
+      })
+      .finally(() => {
+        if (isMounted) setActiveBachatLoading(false)
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [user])
+
   const todayCollectionProgress = useMemo(() => {
-    if (summary.activeDailyExpected <= 0) return 0
-    return clampPercent((summary.todayCollection / summary.activeDailyExpected) * 100)
-  }, [summary.activeDailyExpected, summary.todayCollection])
+    if (summary.collectionProgress > 0) return clampPercent(summary.collectionProgress)
+    if (summary.todayTarget <= 0) return 0
+    return clampPercent((summary.todayCollection / summary.todayTarget) * 100)
+  }, [summary.collectionProgress, summary.todayCollection, summary.todayTarget])
 
   useEffect(() => {
     const term = debouncedSearch.trim()
-    if (!user || term.length < 2) {
+    if (!user || activeBachatLoading || term.length < 2) {
       setSearchResults([])
       setSearchLoading(false)
       setSearchError('')
@@ -365,9 +428,15 @@ function BachatDashboardView({ user }) {
         if (exactResult.status === 'fulfilled') {
           merged.set(customerRouteId(exactResult.value), exactResult.value)
         }
-        setSearchResults([...merged.values()].slice(0, 8))
+        const filteredResults = [...merged.values()].filter((customer) => {
+          const routeId = customerRouteId(customer)
+          return routeId && activeBachatCustomerIds.has(routeId)
+        })
+        setSearchResults(filteredResults.slice(0, 8))
         if (searchResult.status === 'rejected' && exactResult.status === 'rejected') {
           setSearchError('No indexed customer match found.')
+        } else if (!filteredResults.length) {
+          setSearchError('No active Bachat account found for this search.')
         }
       })
       .finally(() => {
@@ -377,7 +446,7 @@ function BachatDashboardView({ user }) {
     return () => {
       isMounted = false
     }
-  }, [debouncedSearch, user])
+  }, [activeBachatCustomerIds, activeBachatLoading, debouncedSearch, user])
 
   useEffect(() => {
     const term = debouncedEnrollSearch.trim()
@@ -508,6 +577,105 @@ function BachatDashboardView({ user }) {
     navigate(`/bachat/profile/${routeId}`)
   }
 
+  const closeInsightModal = () => {
+    setInsightModal(createInsightModalState())
+  }
+
+  const buildAccountRows = (accounts = []) =>
+    accounts.map((account) => ({
+      customerId: account.customerId || account.id,
+      customerName: account.fullName || account.ownerName || account.shopName || account.customerId,
+      dailyAmount: moneyValue(account, 'dailyAmount'),
+      pendingAmount: moneyValue(account, 'pendingAmount'),
+      penaltyAmount: moneyValue(account, 'penaltyAmount'),
+      status: account.status || 'active',
+      lastCollectionDate: account.lastCollectionDate || '-',
+    }))
+
+  const handleCardClick = async (cardKey) => {
+    if (!user) return
+
+    const staticListFromAccounts = (title, filterFn) => {
+      const rows = buildAccountRows(activeBachatAccounts.filter(filterFn))
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title,
+        loading: false,
+        rows,
+      })
+    }
+
+    if (cardKey === 'activeAccounts') {
+      staticListFromAccounts('Active Accounts', () => true)
+      return
+    }
+    if (cardKey === 'todayPendingAmount') {
+      staticListFromAccounts("Today's Pending Accounts", (account) => moneyValue(account, 'pendingAmount') > 0)
+      return
+    }
+    if (cardKey === 'penalties') {
+      staticListFromAccounts('Penalty Accounts', (account) => moneyValue(account, 'penaltyAmount') > 0)
+      return
+    }
+    if (cardKey === 'missedPayments') {
+      staticListFromAccounts('Missed Payment Accounts', (account) => numberValue(account.missedMonths) > 0)
+      return
+    }
+    if (cardKey === 'maturedAccounts') {
+      staticListFromAccounts('Maturity Eligible Accounts', (account) => Boolean(account.closureEligibility))
+      return
+    }
+
+    if (cardKey === 'todayCollection' || cardKey === 'todayTarget' || cardKey === 'collectionProgress') {
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title: "Today's Collection Entries",
+        loading: true,
+        rows: [],
+      })
+      try {
+        const response = await getBachatCollectionsByDate({
+          date: todayKey(),
+          currentUser: user,
+          pageSize: 1000,
+        })
+        const rows = (response?.results || []).map((entry) => ({
+          customerId: entry.customerId,
+          customerName: entry.customerId,
+          dailyAmount: moneyValue(entry, 'amountCollected'),
+          pendingAmount: moneyValue(entry, 'pendingRecovered'),
+          penaltyAmount: moneyValue(entry, 'penaltyRecovered'),
+          status: entry.status || '-',
+          lastCollectionDate: entry.paymentDate || '-',
+        }))
+        setInsightModal({
+          open: true,
+          key: cardKey,
+          title: "Today's Collection Entries",
+          loading: false,
+          rows,
+        })
+      } catch (error) {
+        setInsightModal((previous) => ({ ...previous, loading: false, rows: [] }))
+        toast.error(error?.message || 'Unable to load collection entries.')
+      }
+      return
+    }
+
+    if (cardKey === 'prematureClosures') {
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title: 'Premature Closures',
+        loading: false,
+        rows: [],
+      })
+      return
+    }
+  }
+
   const updateEnrollForm = (field, value) => {
     setEnrollModal((previous) => ({
       ...previous,
@@ -574,15 +742,15 @@ function BachatDashboardView({ user }) {
 
   const operationalCards = useMemo(
     () => [
-      { label: 'Active Accounts', value: summary.activeAccounts, icon: FiUsers },
-      { label: "Today's Target", value: summary.activeDailyExpected, currency: true, icon: FiCalendar },
-      { label: "Today's Collection", value: summary.todayCollection, currency: true, icon: MdOutlinePayments },
-      { label: 'Collection Progress', value: `${Math.round(todayCollectionProgress)}%`, icon: FiTrendingUp },
-      { label: "Today's Pending Amount", value: summary.todayPendingAmount, currency: true, icon: FiAlertTriangle },
-      { label: 'Penalties', value: summary.penalties, currency: true, icon: FiAlertTriangle },
-      { label: 'Missed Payments', value: summary.missedPayments, icon: FiCalendar },
-      { label: 'Matured Accounts', value: summary.maturedAccounts, icon: FiClock },
-      { label: 'Premature Closures', value: summary.prematureClosures, icon: FiTrendingDown },
+      { key: 'activeAccounts', label: 'Active Accounts', value: summary.activeAccounts, icon: FiUsers },
+      { key: 'todayTarget', label: "Today's Target", value: summary.todayTarget, currency: true, icon: FiCalendar },
+      { key: 'todayCollection', label: "Today's Collection", value: summary.todayCollection, currency: true, icon: MdOutlinePayments },
+      { key: 'collectionProgress', label: 'Collection Progress', value: `${Math.round(todayCollectionProgress)}%`, icon: FiTrendingUp },
+      { key: 'todayPendingAmount', label: "Today's Pending Amount", value: summary.todayPendingAmount, currency: true, icon: FiAlertTriangle },
+      { key: 'penalties', label: 'Penalties', value: summary.penalties, currency: true, icon: FiAlertTriangle },
+      { key: 'missedPayments', label: 'Missed Payments', value: summary.missedPayments, icon: FiCalendar },
+      { key: 'maturedAccounts', label: 'Matured Accounts', value: summary.maturedAccounts, icon: FiClock },
+      { key: 'prematureClosures', label: 'Premature Closures', value: summary.prematureClosures, icon: FiTrendingDown },
     ],
     [summary, todayCollectionProgress],
   )
@@ -618,19 +786,23 @@ function BachatDashboardView({ user }) {
                 Total Bachat Amount
               </p>
               <p className="mt-3 font-display text-4xl font-bold md:text-5xl">
-                {formatCurrency(summary.totalCollected)}
+                {summaryLoading ? 'Loading...' : formatCurrency(summary.totalBachatAmount)}
               </p>
               <p className="mt-3 text-sm font-medium text-cyan-100">
-                Monthly collection {formatCurrency(summary.monthlyCollection)} | Target {formatCurrency(summary.activeDailyExpected)}
+                {summaryLoading
+                  ? 'Loading monthly summary...'
+                  : `Monthly collection ${formatCurrency(summary.monthlyCollection)} | Target ${formatCurrency(summary.monthlyTarget)}`}
               </p>
               <div className="mt-4 h-2 rounded-full bg-white/20">
                 <div
                   className="h-2 rounded-full bg-cyan-300 transition-all"
-                  style={{ width: `${Math.round(todayCollectionProgress)}%` }}
+                  style={{ width: `${summaryLoading ? 0 : Math.round(todayCollectionProgress)}%` }}
                 />
               </div>
               <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-cyan-100">
-                Today progress: {Math.round(todayCollectionProgress)}% ({formatCurrency(summary.todayCollection)} / {formatCurrency(summary.activeDailyExpected)})
+                {summaryLoading
+                  ? 'Loading today progress...'
+                  : `Today progress: ${Math.round(todayCollectionProgress)}% (${formatCurrency(summary.todayCollection)} / ${formatCurrency(summary.todayTarget)})`}
               </p>
             </div>
           </div>
@@ -652,10 +824,13 @@ function BachatDashboardView({ user }) {
             />
           </div>
           <div className="mt-3 rounded-lg border border-slate-200 bg-white">
+            {activeBachatLoading && (
+              <p className="px-4 py-4 text-sm text-slate-500">Loading active Bachat customers...</p>
+            )}
             {searchLoading && (
               <p className="px-4 py-4 text-sm text-slate-500">Searching customers...</p>
             )}
-            {!searchLoading &&
+            {!activeBachatLoading && !searchLoading &&
               searchResults.map((customer) => (
                 <button
                   key={customerRouteId(customer)}
@@ -672,12 +847,12 @@ function BachatDashboardView({ user }) {
                   <span className="shrink-0 text-sm font-semibold text-slate-800">{formatCurrency(moneyValue(customer, 'dailyAmount'))}</span>
                 </button>
               ))}
-            {!searchLoading && debouncedSearch.trim().length >= 2 && !searchResults.length && (
+            {!activeBachatLoading && !searchLoading && debouncedSearch.trim().length >= 2 && !searchResults.length && (
               <p className="px-4 py-4 text-sm text-slate-500">
                 {searchError || 'No customers found.'}
               </p>
             )}
-            {!searchLoading && debouncedSearch.trim().length < 2 && (
+            {!activeBachatLoading && !searchLoading && debouncedSearch.trim().length < 2 && (
               <p className="px-4 py-4 text-sm text-slate-500">
                 Enter at least 2 characters to search.
               </p>
@@ -687,10 +862,78 @@ function BachatDashboardView({ user }) {
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {operationalCards.map((card) => (
-          <BachatStatCard key={card.label} {...card} />
-        ))}
+        {summaryLoading
+          ? Array.from({ length: 9 }).map((_, index) => (
+              <article key={index} className="card h-28 animate-pulse bg-slate-100" />
+            ))
+          : operationalCards.map((card) => (
+              <BachatStatCard key={card.key} {...card} onClick={() => handleCardClick(card.key)} />
+            ))}
       </section>
+
+      <Modal
+        isOpen={insightModal.open}
+        title={insightModal.title || 'Card Details'}
+        onClose={closeInsightModal}
+        sizeClass="max-w-4xl"
+      >
+        <div className="space-y-3">
+          {insightModal.loading && (
+            <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
+              Loading details...
+            </p>
+          )}
+          {!insightModal.loading && insightModal.key === 'prematureClosures' && (
+            <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
+              Premature closure count is summary-driven. Detailed closure listing is available in customer profiles.
+            </p>
+          )}
+          {!insightModal.loading && insightModal.rows.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Daily</th>
+                    <th className="px-3 py-2">Pending</th>
+                    <th className="px-3 py-2">Penalty</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {insightModal.rows.map((row) => (
+                    <tr key={`${row.customerId}_${row.lastCollectionDate}`}>
+                      <td className="px-3 py-2">
+                        <p className="font-semibold text-slate-900">{row.customerName}</p>
+                        <p className="text-xs text-slate-500">{row.customerId}</p>
+                      </td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.dailyAmount)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.pendingAmount)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.penaltyAmount)}</td>
+                      <td className="px-3 py-2 text-slate-600">{row.status}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="btn-secondary !py-1.5"
+                          onClick={() => openBachatProfile({ customerId: row.customerId })}
+                        >
+                          Open Profile
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {!insightModal.loading && !insightModal.rows.length && insightModal.key !== 'prematureClosures' && (
+            <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
+              No records available for this card right now.
+            </p>
+          )}
+        </div>
+      </Modal>
 
       <Modal
         isOpen={enrollModal.open}
