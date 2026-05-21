@@ -1,5 +1,5 @@
-import { memo, useEffect, useState } from 'react'
-import { Link, NavLink, useLocation } from 'react-router-dom'
+import { memo, useEffect, useRef, useState } from 'react'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   FiBell,
   FiChevronDown,
@@ -33,7 +33,7 @@ const navigation = {
           icon: FiGrid,
           activePaths: ['/bachat/dashboard', '/dashboard/bachat'],
         },
-        { to: '/bachat/enroll', label: 'Add Customer To Bachat', icon: FiPlusCircle },
+        { to: '/bachat/enroll', label: 'Add Customer To Bachat', icon: FiPlusCircle, refreshOnClick: true },
         {
           to: '/bachat/collections',
           label: 'Bachat Daily Collections',
@@ -67,7 +67,7 @@ const navigation = {
           icon: FiGrid,
           activePaths: ['/bachat/dashboard', '/dashboard/bachat'],
         },
-        { to: '/bachat/enroll', label: 'Add Customer To Bachat', icon: FiPlusCircle },
+        { to: '/bachat/enroll', label: 'Add Customer To Bachat', icon: FiPlusCircle, refreshOnClick: true },
         {
           to: '/bachat/collections',
           label: 'Bachat Daily Collections',
@@ -98,8 +98,10 @@ const isGroupActive = (pathname, group) =>
 function Sidebar({ open, onClose }) {
   const { logout, user } = useAuth()
   const { pathname } = useLocation()
+  const navigate = useNavigate()
   const links = navigation[user?.role] || navigation.collector
   const [expandedGroups, setExpandedGroups] = useState({})
+  const refreshCounter = useRef(0)
 
   useEffect(() => {
     links.forEach((link) => {
@@ -111,6 +113,15 @@ function Sidebar({ open, onClose }) {
 
   const toggleGroup = (groupId) => {
     setExpandedGroups((previous) => ({ ...previous, [groupId]: !previous[groupId] }))
+  }
+
+  const handleChildClick = (event, child) => {
+    if (child.refreshOnClick) {
+      event.preventDefault()
+      refreshCounter.current += 1
+      navigate(`${child.to}?open=${refreshCounter.current}`)
+    }
+    onClose()
   }
 
   return (
@@ -182,7 +193,7 @@ function Sidebar({ open, onClose }) {
                           <Link
                             key={child.to}
                             to={child.to}
-                            onClick={onClose}
+                            onClick={(event) => handleChildClick(event, child)}
                             onFocus={() => preloadRoute(child.to)}
                             onMouseEnter={() => preloadRoute(child.to)}
                             className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors duration-150 ${

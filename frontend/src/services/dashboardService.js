@@ -27,7 +27,7 @@ import {
   paiseToMoney,
   todayKey,
 } from './firestoreService'
-import { listenBachatSummary } from './bachatService'
+import { calculateBachatLiveMetrics } from './bachatService'
 import { calculateLoanMetrics, updateLoanPenalty } from './loanService'
 
 const buildScopedQuery = (collectionName, currentUser, collectorField = 'collectorId') => {
@@ -47,6 +47,11 @@ const scopedDailyAccountConstraints = (currentUser) =>
   currentUser?.role === USER_ROLES.collector
     ? [where('collectorId', '==', currentUser.userId), where('status', '==', 'active'), orderBy('updatedAt', 'desc')]
     : [where('status', '==', 'active'), orderBy('updatedAt', 'desc')]
+
+const scopedBachatConstraints = (currentUser) =>
+  currentUser?.role === USER_ROLES.collector
+    ? [where('collectorId', '==', currentUser.userId)]
+    : []
 
 const scopedDateConstraints = (currentUser, field, date) =>
   currentUser?.role === USER_ROLES.collector
@@ -190,7 +195,7 @@ const makeRecentTransactions = ({ collections, payments, financeEntries }) =>
       title: item.shopName || item.customerName || 'Daily collection',
       type: 'Bachat collection',
       amount: moneyValue(item, 'amount'),
-      date: item.date,
+      date: dateKeyForRecord(item),
       status: item.status || 'received',
     })),
     ...payments.slice(0, 4).map((item) => ({
@@ -230,7 +235,7 @@ const makeCollectionTrend = (collections, payments, monthStart, monthEnd) => {
   }
 
   collections.forEach((item) => {
-    const date = item.date
+    const date = dateKeyForRecord(item)
     if (!date || date < monthStart || date > monthEnd) return
     const group = ensureDate(date)
     group.daily += moneyValue(item, 'amount')
@@ -249,31 +254,25 @@ const makeCollectionTrend = (collections, payments, monthStart, monthEnd) => {
   return [...groups.values()].sort((first, second) => first.date.localeCompare(second.date))
 }
 
-const getPendingCustomerRows = (customers, todayCollections) => {
-  const collectedIds = new Set(todayCollections.map((item) => item.customerId))
-
-  return customers
-    .filter((customer) => customer.status !== 'inactive')
-    .map((customer) => {
-      const customerId = customer.customerId || customer.id
-      const missedToday = !collectedIds.has(customerId)
-      const basePendingAmount = moneyValue(customer, 'pendingAmount')
-      const pendingAmount =
-        basePendingAmount + (missedToday ? moneyValue(customer, 'dailyAmount') : 0)
-      const pendingDays = numberValue(customer.pendingDays) + (missedToday ? 1 : 0)
-
+const getBachatPendingCustomerRows = (accounts) =>
+  accounts
+    .map((account) => {
+      const customerId = account.customerId || account.id
+      const pendingAmount = moneyValue(account, 'pendingAmount')
       return {
-        ...customer,
-        customerName: customer.ownerName,
-        collectorName: customer.assignedCollectorName,
+        ...account,
+        customerId,
+        shopName: account.shopName || account.customerName || account.fullName || customerId,
+        ownerName: account.ownerName || account.fullName || account.customerName || account.shopName,
+        customerName: account.customerName || account.fullName || account.ownerName || account.shopName,
+        collectorName: account.collectorName || account.assignedCollectorName,
         pendingAmount,
-        pendingDays,
-        missedToday,
+        pendingDays: numberValue(account.pendingDays) || numberValue(account.overdueDays),
+        missedToday: false,
       }
     })
-    .filter((customer) => customer.pendingAmount > 0 || customer.missedToday)
-    .sort((first, second) => second.pendingDays - first.pendingDays)
-}
+    .filter((account) => account.customerId && account.pendingAmount > 0)
+    .sort((first, second) => second.pendingAmount - first.pendingAmount)
 
 const getCollectorPerformance = (collections, payments) => {
   const groups = new Map()
@@ -421,36 +420,52 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     dailyAccounts: [],
     todayCollections: [],
     monthCollections: [],
+    bachatAccounts: [],
+    bachatCollections: [],
     loans: [],
     todayPayments: [],
     monthPayments: [],
     recentPayments: [],
     penalties: [],
     financeEntries: [],
-    bachatSummary: {},
-    bachatSummaryReady: false,
   }
   let recomputeHandle = null
 
   const recompute = () => {
     recomputeHandle = null
-    if (!state.bachatSummaryReady) return
 
     const activeCustomers = state.customers.filter((item) => item.status !== 'inactive')
     const activeDailyAccounts = state.dailyAccounts.filter((item) => item.status === 'active')
-    const pendingCustomers = getPendingCustomerRows(activeDailyAccounts, state.todayCollections)
+    const bachatMetrics = calculateBachatLiveMetrics({
+      accounts: state.bachatAccounts,
+      collections: state.bachatCollections,
+      customers: activeCustomers,
+    })
+    const activeBachatAccounts = bachatMetrics.activeAccounts
+    const activeBachatCollections = bachatMetrics.activeCollections
+    const todayBachatCollections = activeBachatCollections.filter(
+      (item) => dateKeyForRecord(item) === today,
+    )
+    const monthBachatCollections = activeBachatCollections.filter((item) => {
+      const date = dateKeyForRecord(item)
+      return date >= monthStart && date <= monthEnd
+    })
+    const pendingCustomers = getBachatPendingCustomerRows(activeBachatAccounts)
     const activeLoans = state.loans.filter((item) => item.loanStatus === 'active')
     const overdueLoans = activeLoans
       .map((loan) => ({ ...loan, ...calculateLoanMetrics(loan) }))
       .filter((loan) => loan.overdueDays > 0)
-    const monthlyDailyCollection = getCollectionTotal(state.monthCollections)
+    const monthlyDailyCollection = getCollectionTotal(monthBachatCollections)
     const monthlyEmiCollection = getPaymentTotal(state.monthPayments)
-    const totalBachatAmount = moneyValue(state.bachatSummary, 'totalBachatAmount')
-    const todayBachatCollection = moneyValue(state.bachatSummary, 'todayCollection')
-    const bachatMonthlyCollection = moneyValue(state.bachatSummary, 'monthlyCollection')
-    const bachatPendingAmount = moneyValue(state.bachatSummary, 'todayPendingAmount')
-    const bachatActiveAccounts = numberValue(state.bachatSummary.activeAccounts)
-    const bachatCollectionProgress = numberValue(state.bachatSummary.collectionProgress)
+    const totalBachatAmount = bachatMetrics.totalBachatAmount
+    const todayBachatCollection = getCollectionTotal(todayBachatCollections)
+    const bachatMonthlyCollection = monthlyDailyCollection
+    const bachatPendingAmount = pendingCustomers.reduce(
+      (sum, customer) => sum + numberValue(customer.pendingAmount),
+      0,
+    )
+    const bachatActiveAccounts = activeBachatAccounts.length
+    const bachatCollectionProgress = 0
     const totalSavings = activeDailyAccounts.reduce(
       (sum, item) => sum + moneyValue(item, 'totalCollected'),
       0,
@@ -468,7 +483,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     const totalPenaltyAmount =
       getActivePenaltyTotal(state.penalties) ||
       overdueLoans.reduce((sum, loan) => sum + moneyValue(loan, 'penaltyAmount'), 0) +
-        activeDailyAccounts.reduce((sum, account) => sum + moneyValue(account, 'penaltyAmount'), 0)
+        activeBachatAccounts.reduce((sum, account) => sum + moneyValue(account, 'penaltyAmount'), 0)
     const ledger = state.financeEntries
     const ledgerCollections = sumFinanceEntries(ledger, ['collection', 'received', 'income'])
     const totalDeposits = sumFinanceEntries(ledger, ['deposit'])
@@ -507,7 +522,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       'business',
     ])
     const monthlyCollection = bachatMonthlyCollection + monthlyEmiCollection
-    const monthlyExpectedDaily = activeDailyAccounts.reduce(
+    const monthlyExpectedDaily = activeBachatAccounts.reduce(
       (sum, account) => sum + moneyValue(account, 'dailyAmount') * dayOfMonth,
       0,
     )
@@ -649,8 +664,8 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       monthlyCollection,
       monthlyDailyCollection: bachatMonthlyCollection,
       monthlyEmiCollection,
-      paidToday: state.todayCollections.filter((item) => item.status === 'paid').length,
-      pendingToday: pendingCustomers.filter((item) => item.missedToday).length,
+      paidToday: todayBachatCollections.filter((item) => moneyValue(item, 'amount') > 0).length,
+      pendingToday: pendingCustomers.length,
       totalLoans: state.loans.length,
       activeLoans: activeLoans.length,
       totalLoanRepaid,
@@ -662,19 +677,19 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       emiOverdueAmount: overdueLoans.reduce((sum, loan) => sum + loan.emiDueAmount, 0),
       penaltyAmount: totalPenaltyAmount,
       dailyPendingAmount,
-      recentCollections: state.todayCollections.slice(0, 6),
+      recentCollections: todayBachatCollections.slice(0, 6),
       recentLoanPayments,
       overdueCustomers: pendingCustomers.slice(0, 6),
-      collectorPerformance: state.monthCollections.length
-        ? getCollectorCollectionPerformance(state.monthCollections, state.monthPayments)
-        : getCollectorPerformance(state.todayCollections, state.monthPayments),
+      collectorPerformance: monthBachatCollections.length
+        ? getCollectorCollectionPerformance(monthBachatCollections, state.monthPayments)
+        : getCollectorPerformance(todayBachatCollections, state.monthPayments),
       modules,
       recentTransactions: makeRecentTransactions({
-        collections: state.todayCollections,
+        collections: todayBachatCollections,
         payments: recentLoanPayments,
         financeEntries: ledger,
       }),
-      collectionTrend: makeCollectionTrend(state.monthCollections, state.monthPayments, monthStart, monthEnd),
+      collectionTrend: makeCollectionTrend(monthBachatCollections, state.monthPayments, monthStart, monthEnd),
       collectionProgress: monthlyTarget ? (monthlyCollection / monthlyTarget) * 100 : 0,
       lastUpdatedAt: Date.now(),
       monthlySummary: {
@@ -692,21 +707,28 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     recomputeHandle = scheduleFrame(recompute)
   }
 
-  const updateValueState = (key, value) => {
-    state[key] = value || {}
-    state[`${key}Ready`] = true
-    if (recomputeHandle) cancelFrame(recomputeHandle)
-    recomputeHandle = scheduleFrame(recompute)
-  }
-
   const subscriptions = [
-    listenBachatSummary(
-      (summary) => updateValueState('bachatSummary', summary),
-      onError,
-    ),
     onSnapshot(
       query(collection(db, COLLECTIONS.customers), ...scopedCustomerConstraints(currentUser)),
       (snapshot) => updateState('customers', snapshot),
+      onError,
+    ),
+    onSnapshot(
+      query(
+        collection(db, COLLECTIONS.bachatAccounts),
+        ...scopedBachatConstraints(currentUser),
+        limit(1000),
+      ),
+      (snapshot) => updateState('bachatAccounts', snapshot),
+      onError,
+    ),
+    onSnapshot(
+      query(
+        collection(db, COLLECTIONS.bachatCollections),
+        ...scopedBachatConstraints(currentUser),
+        limit(1000),
+      ),
+      (snapshot) => updateState('bachatCollections', snapshot),
       onError,
     ),
     onSnapshot(

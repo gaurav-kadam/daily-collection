@@ -159,6 +159,52 @@ const isActiveBachatAccount = (account = {}) => {
   return !status || status === 'active'
 }
 
+const resolveBachatCustomerId = (record = {}) =>
+  normalizeText(record.customerId || record.id)
+
+const getBachatCollectionAmount = (record = {}) => {
+  const totalAmount = moneyValue(record, 'amount')
+  if (totalAmount > 0) return totalAmount
+
+  return (
+    moneyValue(record, 'amountCollected') +
+    moneyValue(record, 'pendingRecovered') +
+    moneyValue(record, 'penaltyRecovered')
+  )
+}
+
+export const calculateBachatLiveMetrics = ({
+  accounts = [],
+  collections = [],
+  customers = null,
+} = {}) => {
+  const hasCustomerSource = Array.isArray(customers)
+  const currentCustomerIds = hasCustomerSource
+    ? new Set(customers.map((customer) => resolveBachatCustomerId(customer)).filter(Boolean))
+    : null
+
+  const activeAccounts = accounts.filter((account) => {
+    const customerId = resolveBachatCustomerId(account)
+    if (!customerId || !isActiveBachatAccount(account)) return false
+    return !hasCustomerSource || currentCustomerIds.has(customerId)
+  })
+  const activeCustomerIds = new Set(activeAccounts.map((account) => resolveBachatCustomerId(account)))
+  const activeCollections = collections.filter((collectionRecord) =>
+    activeCustomerIds.has(resolveBachatCustomerId(collectionRecord)),
+  )
+  const totalBachatAmount = activeCollections.reduce(
+    (sum, collectionRecord) => sum + getBachatCollectionAmount(collectionRecord),
+    0,
+  )
+
+  return {
+    activeAccounts,
+    activeCollections,
+    activeCustomerIds,
+    totalBachatAmount,
+  }
+}
+
 const resolveBachatLastPaymentDate = (account = {}, fallbackDate = todayKey()) =>
   normalizeText(
     account.lastPaymentDate ||
@@ -506,6 +552,40 @@ export const listenBachatSummary = (callback, onError) =>
       if (onError) onError(error)
     },
   )
+
+export const listenActiveBachatAccounts = ({
+  currentUser,
+  pageSize = 1000,
+} = {}, callback, onError) => {
+  const constraints = []
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.push(where('collectorId', '==', currentUser.userId))
+  }
+  constraints.push(limit(pageLimit(pageSize, 500, 1000)))
+
+  return onSnapshot(
+    query(collection(db, COLLECTIONS.bachatAccounts), ...constraints),
+    (snapshot) => callback(docsWithIds(snapshot).filter(isActiveBachatAccount)),
+    onError,
+  )
+}
+
+export const listenBachatCollections = ({
+  currentUser,
+  pageSize = 1000,
+} = {}, callback, onError) => {
+  const constraints = []
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.push(where('collectorId', '==', currentUser.userId))
+  }
+  constraints.push(limit(pageLimit(pageSize, 500, 1000)))
+
+  return onSnapshot(
+    query(collection(db, COLLECTIONS.bachatCollections), ...constraints),
+    (snapshot) => callback(docsWithIds(snapshot)),
+    onError,
+  )
+}
 
 export const getBachatAccount = async (customerId) => {
   const normalizedId = normalizeText(customerId)
@@ -1592,10 +1672,13 @@ export const createBachatCollection = async ({
 export default {
   BACHAT_RULES,
   calculateBachatInactiveGap,
+  calculateBachatLiveMetrics,
   calculateProgressiveBachatPenalty,
   buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
   listenBachatSummary,
+  listenActiveBachatAccounts,
+  listenBachatCollections,
   getBachatAccount,
   listenBachatAccount,
   getBachatEnrollmentStatus,
