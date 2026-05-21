@@ -16,6 +16,8 @@ import { MdOutlinePayments } from 'react-icons/md'
 import { Link } from 'react-router-dom'
 import TableComponent from '../TableComponent'
 import { getOptimizedImageUrl } from '../../services/cloudinaryService'
+import { calculateBachatPendingAmount } from '../../services/bachatService'
+import { daysBetween, todayKey } from '../../services/firestoreService'
 import { formatDate } from '../../utils/date'
 import { formatCurrency, formatPhone } from '../../utils/format'
 import StatusBadge from './StatusBadge'
@@ -61,6 +63,22 @@ const moneyValue = (record, field, paiseField = `${field}Paise`) => {
     return numberValue(record[paiseField]) / 100
   }
   return numberValue(record?.[field])
+}
+
+const hasMoneyField = (record, field) =>
+  record?.[field] !== undefined || record?.[`${field}Paise`] !== undefined
+
+const moneyValueWithFallback = (primary, field, fallback = {}, fallbackField = field) =>
+  hasMoneyField(primary, field) ? moneyValue(primary, field) : moneyValue(fallback, fallbackField)
+
+const pluralizeDays = (days) => `${days} day${days === 1 ? '' : 's'}`
+
+const closureCompletedDays = (closure = {}, account = {}) => {
+  const storedDays = numberValue(closure.durationCompletedDays)
+  if (storedDays > 0 || closure.durationCompletedDays === 0) return storedDays
+  const startDate = closure.startDate || account.startDateKey || account.startDate
+  const closureDate = closure.closureDate || closure.closedOn || todayKey()
+  return daysBetween(startDate, closureDate)
 }
 
 const identityName = (customer) =>
@@ -134,6 +152,8 @@ function BachatModule({ data, customerId }) {
   const account = data?.account || {}
   const collections = data?.collections || []
   const penalty = data?.penalty || null
+  const closure = data?.closure || null
+  const calculatedPendingAmount = calculateBachatPendingAmount(account).pendingAmount
   const penaltyAmount = moneyValue(account, 'penaltyAmount') || moneyValue(penalty, 'penaltyAmount')
   const collectionSavings = collections.reduce((sum, item) => sum + moneyValue(item, 'amount'), 0)
   const storedSavings =
@@ -141,6 +161,11 @@ function BachatModule({ data, customerId }) {
       ? moneyValue(account, 'totalSavings')
       : moneyValue(account, 'totalCollected')
   const totalBachatSavings = storedSavings || collectionSavings
+  const accountStatus = String(account.accountStatus || account.status || 'active').toLowerCase()
+  const permanentlyClosed =
+    accountStatus === 'permanently_closed' ||
+    String(closure?.closureType || '').toLowerCase() === 'permanent' ||
+    String(closure?.status || '').toLowerCase() === 'closed'
 
   const columns = [
     { header: 'Date', accessor: 'paymentDate', render: (row) => formatDate(row.paymentDate) },
@@ -174,22 +199,81 @@ function BachatModule({ data, customerId }) {
             Savings, maturity, and recovery overview
           </h4>
         </div>
-        <Link
-          to={`/bachat/profile/${customerId}`}
-          className="btn-secondary gap-2 self-start md:self-auto"
-        >
-          More Info
-          <FiArrowUpRight />
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {permanentlyClosed && (
+            <span className="inline-flex rounded-lg bg-rose-100 px-3 py-1.5 text-xs font-bold uppercase tracking-wide text-rose-700">
+              Permanently Closed
+            </span>
+          )}
+          <Link
+            to={`/bachat/profile/${customerId}`}
+            className="btn-secondary gap-2 self-start md:self-auto"
+          >
+            More Info
+            <FiArrowUpRight />
+          </Link>
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <StatCard label="Daily Amount" value={formatCurrency(moneyValue(account, 'dailyAmount'))} icon={MdOutlinePayments} tone="cyan" />
         <StatCard label="Total Bachat Savings" value={formatCurrency(totalBachatSavings)} icon={FiDatabase} tone="indigo" />
         <StatCard label="Maturity Amount" value={formatCurrency(moneyValue(account, 'maturityAmount'))} icon={FiShield} tone="emerald" />
-        <StatCard label="Pending Amount" value={formatCurrency(moneyValue(account, 'pendingAmount'))} icon={FiAlertTriangle} tone="amber" />
+        <StatCard label="Pending Amount" value={formatCurrency(calculatedPendingAmount)} icon={FiAlertTriangle} tone="amber" />
         <StatCard label="Penalties" value={formatCurrency(penaltyAmount)} icon={FiAlertTriangle} tone="rose" />
       </div>
+      {permanentlyClosed && (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
+          <StatCard
+            label="Closure Date"
+            value={formatDate(closure?.closureDate || account.closureDate)}
+            icon={FiClock}
+            tone="rose"
+          />
+          <StatCard
+            label="Final Settlement"
+            value={formatCurrency(
+              moneyValue(closure, 'finalSettlementAmount') || moneyValue(account, 'finalSettlementAmount'),
+            )}
+            icon={FiShield}
+            tone="emerald"
+          />
+          <StatCard
+            label="Interest Given"
+            value={formatCurrency(moneyValue(closure, 'interestAmount'))}
+            icon={FiDatabase}
+            tone="cyan"
+          />
+          <StatCard
+            label="Reward Given"
+            value={formatCurrency(moneyValue(closure, 'rewardAmount'))}
+            icon={FiShield}
+            tone="emerald"
+          />
+          <StatCard
+            label="Penalty Deducted"
+            value={formatCurrency(moneyValueWithFallback(closure, 'penaltyDeducted', closure, 'totalPenalty'))}
+            icon={FiAlertTriangle}
+            tone="rose"
+          />
+          <StatCard
+            label="Pending At Closure"
+            value={formatCurrency(
+              hasMoneyField(closure, 'pendingAmount')
+                ? moneyValue(closure, 'pendingAmount')
+                : calculatedPendingAmount,
+            )}
+            icon={FiAlertTriangle}
+            tone="amber"
+          />
+          <StatCard
+            label="Duration Completed"
+            value={pluralizeDays(closureCompletedDays(closure, account))}
+            icon={FiCalendar}
+            tone="amber"
+          />
+        </div>
+      )}
       <section className="grid gap-4 lg:grid-cols-[minmax(280px,0.7fr)_minmax(0,1.3fr)]">
         <article className="card p-5">
           <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
@@ -207,7 +291,13 @@ function BachatModule({ data, customerId }) {
             <DetailItem label="End Date" value={formatDate(account.endDateKey || account.endDate)} />
             <DetailItem
               label="Closure Status"
-              value={account.closureEligibility ? 'Eligible' : account.status === 'closed' ? 'Closed' : 'Active'}
+              value={
+                permanentlyClosed
+                  ? 'Permanently Closed'
+                  : account.closureEligibility
+                    ? 'Eligible'
+                    : 'Active'
+              }
             />
             <DetailItem label="Recent Penalty Status" value={penalty?.recoveryStatus || penalty?.status} />
           </dl>
@@ -359,8 +449,9 @@ function FdModule({ data }) {
 }
 
 function ModuleContent({ activeModule, module, enrolled, data, status, onEnrollModule, customerId }) {
-  if (!enrolled) return <ModuleEnrollmentEmpty module={module} onEnroll={onEnrollModule} />
+  const hasHistoricalAccount = activeModule === 'bachat' && Boolean(data?.account)
   if (status?.loading) return <ModuleLoading />
+  if (!enrolled && !hasHistoricalAccount) return <ModuleEnrollmentEmpty module={module} onEnroll={onEnrollModule} />
   if (status?.error) return <ModuleError message={status.error} />
   if (!data) return <ModuleLoading />
   if (data && !data.account) {
@@ -393,7 +484,9 @@ function CustomerProfile({
   })
   const activeTab = moduleTabs.find((item) => item.id === activeModule) || moduleTabs[0]
   const moduleFlags = customer.moduleFlags || {}
-  const activeEnrolled = Boolean(moduleFlags[activeTab.flag])
+  const activeEnrolled =
+    Boolean(moduleFlags[activeTab.flag]) ||
+    (activeTab.id === 'bachat' && Boolean(moduleData.bachat?.account))
   const routeCustomerId = customer.customerId || customer.id
 
   return (

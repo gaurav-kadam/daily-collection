@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { FiCheckCircle, FiPlus } from 'react-icons/fi'
+import { useSearchParams } from 'react-router-dom'
 import Loader from '../components/Loader'
 import useAuth from '../hooks/useAuth'
 import {
+  calculateBachatPendingAmount,
   createBachatCollection,
   getActiveBachatAccounts,
   getBachatCollectionsByDate,
@@ -23,12 +25,16 @@ const emptyForm = {
 
 function BachatCollectionPage() {
   const { user } = useAuth()
+  const [searchParams] = useSearchParams()
   const [customers, setCustomers] = useState([])
   const [accounts, setAccounts] = useState([])
   const [collections, setCollections] = useState([])
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [appliedPrefillKey, setAppliedPrefillKey] = useState('')
+  const requestedCustomerId = searchParams.get('customerId') || ''
+  const requestedFocus = searchParams.get('focus') || ''
 
   useEffect(() => {
     if (!user) return undefined
@@ -90,8 +96,8 @@ function BachatCollectionPage() {
     [selectedCustomer],
   )
   const selectedPendingAmount = useMemo(
-    () => numberValue(moneyValue(selectedCustomer, 'pendingAmount')),
-    [selectedCustomer],
+    () => calculateBachatPendingAmount(selectedCustomer || {}, form.date).pendingAmount,
+    [form.date, selectedCustomer],
   )
   const selectedPenaltyAmount = useMemo(
     () => numberValue(moneyValue(selectedCustomer, 'penaltyAmount')),
@@ -117,6 +123,53 @@ function BachatCollectionPage() {
         }),
     [accounts, collectedCustomerIds, customerMap],
   )
+
+  useEffect(() => {
+    if (loading || !requestedCustomerId) return
+
+    const prefillKey = `${requestedCustomerId}:${requestedFocus}:${form.date}`
+    if (appliedPrefillKey === prefillKey) return
+
+    const account = accounts.find((item) => item.customerId === requestedCustomerId)
+    if (!account) return
+
+    const dailyAmount = numberValue(moneyValue(account, 'dailyAmount'))
+    const pendingAmount = calculateBachatPendingAmount(account, form.date).pendingAmount
+    const penaltyAmount = numberValue(moneyValue(account, 'penaltyAmount'))
+    const alreadyCollected = collectedCustomerIds.has(requestedCustomerId)
+
+    setForm((previous) => ({
+      ...previous,
+      customerId: requestedCustomerId,
+      amount:
+        requestedFocus === 'pending'
+          ? dailyAmount + pendingAmount
+          : dailyAmount || previous.amount,
+      penaltyRecovered:
+        requestedFocus === 'penalty'
+          ? penaltyAmount || ''
+          : previous.penaltyRecovered,
+      notes:
+        requestedFocus === 'pending'
+          ? 'Pending amount recovery'
+          : requestedFocus === 'penalty'
+            ? 'Penalty recovery'
+            : previous.notes,
+    }))
+    setAppliedPrefillKey(prefillKey)
+
+    if (alreadyCollected) {
+      toast.error('This customer already has a Bachat collection for the selected date.')
+    }
+  }, [
+    accounts,
+    appliedPrefillKey,
+    collectedCustomerIds,
+    form.date,
+    loading,
+    requestedCustomerId,
+    requestedFocus,
+  ])
 
   const updateForm = (event) => {
     const { name, value } = event.target
@@ -246,7 +299,14 @@ function BachatCollectionPage() {
                 required
               >
                 <option value="">Select customer</option>
-                {pendingCustomers.map((customer) => (
+                {pendingCustomers
+                  .concat(
+                    selectedCustomer &&
+                      !pendingCustomers.some((customer) => customer.customerId === selectedCustomer.customerId)
+                      ? [selectedCustomer]
+                      : [],
+                  )
+                  .map((customer) => (
                   <option key={customer.customerId || customer.id} value={customer.customerId || customer.id}>
                     {customer.fullName || customer.ownerName || customer.shopName} - {customer.customerId || customer.id}
                   </option>
@@ -349,7 +409,7 @@ function BachatCollectionPage() {
                   </p>
                   <p>
                     <span className="text-slate-500">Pending:</span>{' '}
-                    <strong>{formatCurrency(moneyValue(selectedCustomer, 'pendingAmount'))}</strong>
+                    <strong>{formatCurrency(selectedPendingAmount)}</strong>
                   </p>
                   <p>
                     <span className="text-slate-500">Penalty:</span>{' '}

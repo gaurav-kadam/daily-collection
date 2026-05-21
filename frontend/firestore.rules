@@ -88,6 +88,7 @@ service cloud.firestore {
         'notes',
         'searchKeywords',
         'moduleFlags',
+        'bachatRejoinBlockedUntil',
         'totalSavings',
         'totalSavingsPaise',
         'pendingAmount',

@@ -23,12 +23,14 @@ import useAuth from '../hooks/useAuth'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
   BACHAT_RULES,
+  calculateBachatPendingAmount,
   calculateBachatLiveMetrics,
   enrollCustomerToBachat,
   getActiveBachatAccounts,
   getBachatCollectionsByDate,
   getBachatEnrollmentStatus,
   listenActiveBachatAccounts,
+  listenBachatClosures,
   listenBachatCollections,
   listenBachatPenalties,
   listenBachatSummary,
@@ -40,6 +42,7 @@ import {
   numberValue,
   todayKey,
 } from '../services/firestoreService'
+import { formatDate } from '../utils/date'
 import { formatCurrency } from '../utils/format'
 
 const moduleConfig = {
@@ -284,7 +287,8 @@ const buildBachatPendingRows = (accounts = []) => {
 
   accounts.forEach((account) => {
     const customerId = account.customerId || account.id
-    const totalPending = moneyValue(account, 'pendingAmount')
+    const pendingSummary = calculateBachatPendingAmount(account)
+    const totalPending = pendingSummary.pendingAmount
     if (!customerId || totalPending <= 0) return
 
     const existing = rowsByCustomer.get(customerId)
@@ -294,6 +298,9 @@ const buildBachatPendingRows = (accounts = []) => {
       customerId,
       customerName: customerLabel(account),
       totalPending,
+      activeDaysTillYesterday: pendingSummary.activeDaysTillYesterday,
+      expectedAmountTillYesterday: pendingSummary.expectedAmountTillYesterday,
+      totalCollectedAmount: pendingSummary.totalCollectedAmount,
     })
   })
 
@@ -339,6 +346,7 @@ const createEnrollmentModalState = (overrides = {}) => ({
   saving: false,
   checkingStatus: false,
   isEnrolled: false,
+  isRejoinBlocked: false,
   statusMessage: '',
   error: '',
   ...overrides,
@@ -367,7 +375,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
     penalties: 0,
     missedPayments: 0,
     maturedAccounts: 0,
-    prematureClosures: 0,
+    permanentClosures: 0,
   })
   const [summaryLoading, setSummaryLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -378,6 +386,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
   const [activeBachatAccounts, setActiveBachatAccounts] = useState([])
   const [bachatCollections, setBachatCollections] = useState([])
   const [bachatPenalties, setBachatPenalties] = useState([])
+  const [bachatClosures, setBachatClosures] = useState([])
   const [activeBachatCustomerIds, setActiveBachatCustomerIds] = useState(new Set())
   const [activeBachatLoading, setActiveBachatLoading] = useState(true)
   const [insightModal, setInsightModal] = useState(createInsightModalState())
@@ -404,7 +413,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
           penalties: 0,
           missedPayments: 0,
           maturedAccounts: numberValue(nextSummary.maturedAccounts),
-          prematureClosures: numberValue(nextSummary.prematureClosures),
+          permanentClosures: numberValue(nextSummary.permanentClosures),
         })
         setSummaryLoading(false)
       },
@@ -454,6 +463,14 @@ function BachatDashboardView({ user, openEnroll = false }) {
         setBachatPenalties([])
       },
     )
+    const unsubscribeClosures = listenBachatClosures(
+      { currentUser: user, pageSize: 1000 },
+      (closures) => setBachatClosures(closures),
+      (error) => {
+        toast.error(error?.message || 'Unable to load Bachat closures.')
+        setBachatClosures([])
+      },
+    )
     const unsubscribeCustomers = customerService.listenCustomers(
       user,
       (customers) => setActiveCustomers(customers.filter((customer) => customer.status !== 'inactive')),
@@ -467,6 +484,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       unsubscribeAccounts()
       unsubscribeCollections()
       unsubscribePenalties()
+      unsubscribeClosures()
       unsubscribeCustomers()
     }
   }, [user])
@@ -522,7 +540,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
           customerName: customerLabel(account),
           missedMonths: numberValue(account.missedMonths),
           penaltyAmount: moneyValue(account, 'penaltyAmount'),
-          pendingAmount: moneyValue(account, 'pendingAmount'),
+          pendingAmount: calculateBachatPendingAmount(account).pendingAmount,
         }))
         .filter((row) => row.customerId && row.missedMonths > 0)
         .sort((first, second) => second.missedMonths - first.missedMonths),
@@ -547,10 +565,12 @@ function BachatDashboardView({ user, openEnroll = false }) {
       todayPendingAmount: combinedPendingAmount,
       penalties: activePenaltyTotal,
       missedPayments: missedPaymentTotal,
+      permanentClosures: bachatClosures.length,
     }
   }, [
     activeBachatLoading,
     activePenaltyTotal,
+    bachatClosures.length,
     combinedPendingAmount,
     liveBachatMetrics.activeAccounts.length,
     liveBachatMetrics.totalBachatAmount,
@@ -704,9 +724,12 @@ function BachatDashboardView({ user, openEnroll = false }) {
         account: status.account || null,
         checkingStatus: false,
         isEnrolled: Boolean(status.isEnrolled),
-        statusMessage: status.isEnrolled
-          ? 'Customer already enrolled in Bachat.'
-          : 'Customer not enrolled in Bachat. Complete enrollment details.',
+        isRejoinBlocked: Boolean(status.isRejoinBlocked),
+        statusMessage: status.isRejoinBlocked
+          ? `Customer cannot enroll in Bachat until original maturity date.`
+          : status.isEnrolled
+            ? 'Customer already enrolled in Bachat.'
+            : 'Customer not enrolled in Bachat. Complete enrollment details.',
         error: '',
         form: {
           ...previous.form,
@@ -720,8 +743,9 @@ function BachatDashboardView({ user, openEnroll = false }) {
       setEnrollModal((previous) => ({
         ...previous,
         checkingStatus: false,
-        account: null,
-        isEnrolled: false,
+          account: null,
+          isEnrolled: false,
+          isRejoinBlocked: false,
         statusMessage: '',
         error: error.message || 'Unable to verify enrollment status.',
       }))
@@ -760,7 +784,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       customerId: account.customerId || account.id,
       customerName: account.fullName || account.ownerName || account.shopName || account.customerId,
       dailyAmount: moneyValue(account, 'dailyAmount'),
-      pendingAmount: moneyValue(account, 'pendingAmount'),
+      pendingAmount: calculateBachatPendingAmount(account).pendingAmount,
       penaltyAmount: moneyValue(account, 'penaltyAmount'),
       status: account.status || 'active',
       lastCollectionDate: account.lastCollectionDate || '-',
@@ -789,7 +813,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
           account.shopName ||
           customerId,
         dailyAmount: moneyValue(account, 'dailyAmount'),
-        pendingAmount: moneyValue(penalty, 'pendingAmount') || moneyValue(account, 'pendingAmount'),
+        pendingAmount: calculateBachatPendingAmount(account).pendingAmount,
         penaltyAmount: moneyValue(penalty, 'penaltyAmount'),
         status: penalty.penaltyStatus || penalty.recoveryStatus || 'active',
         lastCollectionDate: displayDate(
@@ -798,6 +822,14 @@ function BachatDashboardView({ user, openEnroll = false }) {
       }
     })
   }
+
+  const buildClosureRows = (closures = []) =>
+    closures.map((closure) => ({
+      customerId: closure.customerId || closure.id,
+      customerName: closure.customerName || closure.fullName || closure.customerId || 'Customer',
+      closureDate: closure.closureDate || closure.closedOn || '',
+      finalSettlementAmount: moneyValue(closure, 'finalSettlementAmount') || moneyValue(closure, 'settlementAmount'),
+    }))
 
   const handleCardClick = async (cardKey) => {
     if (!user) return
@@ -949,13 +981,13 @@ function BachatDashboardView({ user, openEnroll = false }) {
       return
     }
 
-    if (cardKey === 'prematureClosures') {
+    if (cardKey === 'permanentClosures') {
       setInsightModal({
         open: true,
         key: cardKey,
-        title: 'Premature Closures',
+        title: 'Permanent Closures',
         loading: false,
-        rows: [],
+        rows: buildClosureRows(bachatClosures),
       })
       return
     }
@@ -995,6 +1027,18 @@ function BachatDashboardView({ user, openEnroll = false }) {
           account: latestStatus.account || previous.account,
           isEnrolled: true,
           statusMessage: 'Customer already enrolled in Bachat.',
+          error: '',
+        }))
+        return
+      }
+      if (latestStatus.isRejoinBlocked) {
+        setEnrollModal((previous) => ({
+          ...previous,
+          saving: false,
+          customer: latestStatus.customer || previous.customer,
+          account: latestStatus.account || previous.account,
+          isRejoinBlocked: true,
+          statusMessage: 'Customer cannot enroll in Bachat until original maturity date.',
           error: '',
         }))
         return
@@ -1046,7 +1090,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       { key: 'penalties', label: 'Penalties', value: displaySummary.penalties, currency: true, icon: FiAlertTriangle },
       { key: 'missedPayments', label: 'Missed Payments', value: displaySummary.missedPayments, icon: FiCalendar },
       { key: 'maturedAccounts', label: 'Matured Accounts', value: displaySummary.maturedAccounts, icon: FiClock },
-      { key: 'prematureClosures', label: 'Premature Closures', value: displaySummary.prematureClosures, icon: FiTrendingDown },
+      { key: 'permanentClosures', label: 'Permanent Closures', value: displaySummary.permanentClosures, icon: FiTrendingDown },
     ],
     [displaySummary, todayTargetAmount],
   )
@@ -1165,10 +1209,41 @@ function BachatDashboardView({ user, openEnroll = false }) {
               Loading details...
             </p>
           )}
-          {!insightModal.loading && insightModal.key === 'prematureClosures' && (
-            <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
-              Premature closure count is summary-driven. Detailed closure listing is available in customer profiles.
-            </p>
+          {!insightModal.loading && insightModal.rows.length > 0 && insightModal.key === 'permanentClosures' && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Customer</th>
+                    <th className="px-3 py-2">Customer ID</th>
+                    <th className="px-3 py-2">Closure Date</th>
+                    <th className="px-3 py-2">Final Settlement</th>
+                    <th className="px-3 py-2">View Profile</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {insightModal.rows.map((row) => (
+                    <tr key={`${row.customerId}_${row.closureDate}`}>
+                      <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
+                      <td className="px-3 py-2 text-slate-700">{formatDate(row.closureDate)}</td>
+                      <td className="px-3 py-2 font-semibold text-slate-950">
+                        {formatCurrency(row.finalSettlementAmount)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="btn-secondary !py-1.5"
+                          onClick={() => openBachatProfile({ customerId: row.customerId })}
+                        >
+                          View Profile
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
           {!insightModal.loading && insightModal.rows.length > 0 && insightModal.key === 'todayPendingAmount' && (
             <div className="overflow-x-auto">
@@ -1177,6 +1252,9 @@ function BachatDashboardView({ user, openEnroll = false }) {
                   <tr>
                     <th className="px-3 py-2">Customer Name</th>
                     <th className="px-3 py-2">Customer ID</th>
+                    <th className="px-3 py-2">Active Days Till Yesterday</th>
+                    <th className="px-3 py-2">Expected Till Yesterday</th>
+                    <th className="px-3 py-2">Total Collected</th>
                     <th className="px-3 py-2">Total Pending Amount</th>
                   </tr>
                 </thead>
@@ -1185,6 +1263,9 @@ function BachatDashboardView({ user, openEnroll = false }) {
                     <tr key={row.customerId}>
                       <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
                       <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
+                      <td className="px-3 py-2 text-slate-900">{row.activeDaysTillYesterday}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.expectedAmountTillYesterday)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.totalCollectedAmount)}</td>
                       <td className="px-3 py-2 font-semibold text-slate-950">{formatCurrency(row.totalPending)}</td>
                     </tr>
                   ))}
@@ -1252,7 +1333,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
           )}
           {!insightModal.loading &&
             insightModal.rows.length > 0 &&
-            !['todayPendingAmount', 'todayTarget', 'missedPayments'].includes(insightModal.key) && (
+            !['todayPendingAmount', 'todayTarget', 'missedPayments', 'permanentClosures'].includes(insightModal.key) && (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -1291,12 +1372,14 @@ function BachatDashboardView({ user, openEnroll = false }) {
               </table>
             </div>
           )}
-          {!insightModal.loading && !insightModal.rows.length && insightModal.key !== 'prematureClosures' && (
+          {!insightModal.loading && !insightModal.rows.length && (
             <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
               {insightModal.key === 'todayPendingAmount'
                 ? 'No pending accounts found.'
                 : insightModal.key === 'todayTarget'
                   ? "No customers pending for today's collection."
+                  : insightModal.key === 'permanentClosures'
+                    ? 'No permanent closures recorded yet.'
                 : 'No records available for this card right now.'}
             </p>
           )}
@@ -1361,7 +1444,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
               {enrollModal.statusMessage}
             </div>
           )}
-          {!enrollModal.isEnrolled && !enrollModal.checkingStatus && (
+          {!enrollModal.isEnrolled && !enrollModal.isRejoinBlocked && !enrollModal.checkingStatus && (
             <div className="grid gap-3 md:grid-cols-2">
             <label className="text-sm">
               <span className="mb-1 block font-medium text-slate-700">Daily Amount</span>
@@ -1424,7 +1507,12 @@ function BachatDashboardView({ user, openEnroll = false }) {
                 type="button"
                 className="btn-primary"
                 onClick={handleEnroll}
-                disabled={enrollModal.saving || enrollModal.checkingStatus || !enrollModal.customer}
+                disabled={
+                  enrollModal.saving ||
+                  enrollModal.checkingStatus ||
+                  enrollModal.isRejoinBlocked ||
+                  !enrollModal.customer
+                }
               >
                 {enrollModal.saving ? 'Enrolling...' : 'Enroll Customer'}
               </button>

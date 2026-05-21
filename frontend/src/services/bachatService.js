@@ -1,4 +1,5 @@
 import {
+  arrayRemove,
   arrayUnion,
   collection,
   deleteField,
@@ -41,7 +42,8 @@ export const BACHAT_RULES = {
   defaultDurationMonths: 60,
   eligibilityMonths: 24,
   daysPerMonth: 30,
-  postEligibilityBenefitRate: 0.12,
+  permanentClosureInterestRate: 0.006,
+  fullMaturityRewardDailyMultiplier: 600,
   penaltyRate: 0.02,
 }
 
@@ -135,6 +137,7 @@ const emptyBachatSummary = {
   missedPayments: 0,
   maturedAccounts: 0,
   prematureClosures: 0,
+  permanentClosures: 0,
   summaryDayKey: '',
   summaryMonthKey: '',
 }
@@ -156,8 +159,16 @@ const normalizePaymentMethod = (value) => {
 
 const isActiveBachatAccount = (account = {}) => {
   const status = normalizeText(account.status).toLowerCase()
-  return !status || status === 'active'
+  const accountStatus = normalizeText(account.accountStatus).toLowerCase()
+  if (status && status !== 'active') return false
+  if (accountStatus && accountStatus !== 'active') return false
+  return true
 }
+
+const isPermanentlyClosedBachatAccount = (account = {}) =>
+  [account.status, account.accountStatus, account.closureType]
+    .map((value) => normalizeText(value).toLowerCase())
+    .some((value) => value === 'permanently_closed' || value === 'permanent')
 
 const resolveBachatCustomerId = (record = {}) =>
   normalizeText(record.customerId || record.id)
@@ -171,6 +182,25 @@ const getBachatCollectionAmount = (record = {}) => {
     moneyValue(record, 'pendingRecovered') +
     moneyValue(record, 'penaltyRecovered')
   )
+}
+
+export const calculateBachatPendingAmount = (account = {}, asOfDate = todayKey()) => {
+  const startDateKey = account?.startDateKey || dateKeyFromDate(account?.startDate) || todayKey()
+  const activeDaysTillYesterday = daysBetween(startDateKey, asOfDate)
+  const dailyAmount = moneyValue(account, 'dailyAmount')
+  const expectedAmountTillYesterday = normalizeMoney(dailyAmount * activeDaysTillYesterday)
+  const totalCollectedAmount = moneyValue(account, 'totalCollected') || moneyValue(account, 'totalSavings')
+  const pendingAmount = normalizeMoney(
+    Math.max(expectedAmountTillYesterday - totalCollectedAmount, 0),
+  )
+
+  return {
+    activeDaysTillYesterday,
+    dailyAmount,
+    expectedAmountTillYesterday,
+    totalCollectedAmount,
+    pendingAmount,
+  }
 }
 
 export const calculateBachatLiveMetrics = ({
@@ -265,6 +295,7 @@ const resolveBachatSummaryState = ({ summaryData = {}, nowDateKey = todayKey() }
     missedPayments: nonNegativeInteger(summaryData.missedPayments),
     maturedAccounts: nonNegativeInteger(summaryData.maturedAccounts),
     prematureClosures: nonNegativeInteger(summaryData.prematureClosures),
+    permanentClosures: nonNegativeInteger(summaryData.permanentClosures),
     summaryDayKey: expectedDayKey,
     summaryMonthKey: expectedMonthKey,
   }
@@ -298,6 +329,10 @@ const buildBachatSummaryPatch = ({
     state.prematureClosures + numberValue(deltas.prematureClosures),
     0,
   )
+  const permanentClosures = Math.max(
+    state.permanentClosures + numberValue(deltas.permanentClosures),
+    0,
+  )
 
   const includeTodayCollection = normalizeText(collectionDateKey) === state.summaryDayKey
   const includeMonthlyCollection =
@@ -317,7 +352,7 @@ const buildBachatSummaryPatch = ({
     activeDailyExpectedPaise * daysInMonthFromDateKey(state.summaryDayKey),
     0,
   )
-  const todayPendingAmountPaise = Math.max(activeDailyExpectedPaise - todayCollectionPaise, 0)
+  const todayPendingAmountPaise = 0
   const collectionProgress = todayTargetPaise <= 0
     ? 0
     : clampPercent((todayCollectionPaise / todayTargetPaise) * 100)
@@ -346,6 +381,7 @@ const buildBachatSummaryPatch = ({
     missedPayments: Math.round(missedPayments),
     maturedAccounts: Math.round(maturedAccounts),
     prematureClosures: Math.round(prematureClosures),
+    permanentClosures: Math.round(permanentClosures),
     summaryDayKey: state.summaryDayKey,
     summaryMonthKey: state.summaryMonthKey,
     updatedAt: serverTimestamp(),
@@ -450,6 +486,18 @@ export const buildBachatPenaltyAnalysis = ({
 }
 
 export const computeBachatClosurePreview = (account, asOfDate = todayKey()) => {
+  const settlement = computePermanentBachatSettlement(account, asOfDate)
+  return {
+    completedMonths: settlement.durationCompletedMonths,
+    payoutAmount: settlement.finalSettlementAmount,
+    rewardPaid: settlement.rewardAmount,
+    interestPaid: settlement.interestAmount,
+    totalPenalty: settlement.totalPenalty,
+    rule: settlement.rule,
+  }
+}
+
+export const computePermanentBachatSettlement = (account = {}, asOfDate = todayKey()) => {
   const startDateKey = account?.startDateKey || dateKeyFromDate(account?.startDate) || todayKey()
   const durationMonths = Math.max(
     numberValue(account?.durationMonths, BACHAT_RULES.defaultDurationMonths),
@@ -459,33 +507,64 @@ export const computeBachatClosurePreview = (account, asOfDate = todayKey()) => {
     elapsedMonthlyInstallments(startDateKey, asOfDate),
     durationMonths,
   )
-  const principal = moneyValue(account, 'totalCollected')
-  const maturityAmount = moneyValue(account, 'maturityAmount')
-
-  if (completedMonths >= durationMonths) {
-    return {
-      completedMonths,
-      payoutAmount: maturityAmount,
-      rewardPaid: Math.max(maturityAmount - principal, 0),
-      rule: 'maturity',
-    }
-  }
-
-  if (completedMonths >= BACHAT_RULES.eligibilityMonths) {
-    const rewardPaid = normalizeMoney(principal * BACHAT_RULES.postEligibilityBenefitRate)
-    return {
-      completedMonths,
-      payoutAmount: normalizeMoney(principal + rewardPaid),
-      rewardPaid,
-      rule: 'after_24_months',
-    }
-  }
+  const durationEndDate = addMonthsKey(startDateKey, durationMonths)
+  const durationDays = daysBetween(startDateKey, durationEndDate)
+  const completedDays = Math.min(daysBetween(startDateKey, asOfDate), durationDays)
+  const dailyAmount = moneyValue(account, 'dailyAmount')
+  const totalSavings = moneyValue(account, 'totalSavings') || moneyValue(account, 'totalCollected')
+  const totalPenalty = moneyValue(account, 'penaltyAmount')
+  const pendingSummary = calculateBachatPendingAmount(account, asOfDate)
+  const pendingAmount = pendingSummary.pendingAmount
+  const configuredReward = moneyValue(account, 'maturityReward')
+  const remainingDurationMonths = Math.max(durationMonths - completedMonths, 0)
+  const rewardAmount =
+    completedMonths >= BACHAT_RULES.defaultDurationMonths
+      ? normalizeMoney(
+          configuredReward > 0
+            ? configuredReward
+            : dailyAmount * BACHAT_RULES.fullMaturityRewardDailyMultiplier,
+        )
+      : 0
+  const interestAmount =
+    completedMonths >= BACHAT_RULES.eligibilityMonths &&
+    completedMonths < BACHAT_RULES.defaultDurationMonths
+      ? normalizeMoney(totalSavings * BACHAT_RULES.permanentClosureInterestRate)
+      : 0
+  const finalSettlementAmount = normalizeMoney(totalSavings + interestAmount + rewardAmount - totalPenalty)
+  const rule =
+    completedMonths >= BACHAT_RULES.defaultDurationMonths
+      ? 'full_maturity_reward'
+      : completedMonths >= BACHAT_RULES.eligibilityMonths
+        ? 'after_24_months_interest'
+        : 'early_closure_no_benefit'
 
   return {
-    completedMonths,
-    payoutAmount: principal,
-    rewardPaid: 0,
-    rule: 'before_24_months',
+    customerId: normalizeText(account.customerId || account.id),
+    customerName: normalizeText(account.fullName || account.ownerName || account.shopName),
+    startDate: startDateKey,
+    originalEndDate: account.endDateKey || account.endDate || durationEndDate,
+    dailyAmount,
+    totalSavings,
+    pendingAmount,
+    pendingActiveDaysTillYesterday: pendingSummary.activeDaysTillYesterday,
+    expectedAmountTillYesterday: pendingSummary.expectedAmountTillYesterday,
+    pendingTotalCollectedAmount: pendingSummary.totalCollectedAmount,
+    totalPenalty,
+    penaltyDeducted: totalPenalty,
+    durationMonths,
+    durationCompletedMonths: completedMonths,
+    remainingDurationMonths,
+    durationDays,
+    durationCompletedDays: completedDays,
+    remainingDurationDays: Math.max(durationDays - completedDays, 0),
+    interestEligible:
+      completedMonths >= BACHAT_RULES.eligibilityMonths &&
+      completedMonths < BACHAT_RULES.defaultDurationMonths,
+    rewardEligible: completedMonths >= BACHAT_RULES.defaultDurationMonths,
+    interestAmount,
+    rewardAmount,
+    finalSettlementAmount,
+    rule,
   }
 }
 
@@ -498,10 +577,7 @@ export const listenBachatSummary = (callback, onError) =>
         summaryData: { ...emptyBachatSummary, ...rawSummary },
         nowDateKey: todayKey(),
       })
-      const todayPendingAmountPaise = Math.max(
-        normalized.activeDailyExpectedPaise - normalized.todayCollectionPaise,
-        0,
-      )
+      const todayPendingAmountPaise = 0
       const todayTargetPaise = Math.max(normalized.activeDailyExpectedPaise, 0)
       const monthlyTargetPaise = Math.max(
         normalized.activeDailyExpectedPaise * daysInMonthFromDateKey(normalized.summaryDayKey),
@@ -538,6 +614,7 @@ export const listenBachatSummary = (callback, onError) =>
         missedPayments: normalized.missedPayments,
         maturedAccounts: normalized.maturedAccounts,
         prematureClosures: normalized.prematureClosures,
+        permanentClosures: normalized.permanentClosures,
         summaryDayKey: normalized.summaryDayKey,
         summaryMonthKey: normalized.summaryMonthKey,
       })
@@ -777,7 +854,14 @@ export const listenBachatPenaltiesByCustomer = ({
 
 const isActiveBachatPenalty = (record = {}) => {
   const status = normalizeText(record.penaltyStatus || record.recoveryStatus || record.status).toLowerCase()
-  return moneyValue(record, 'penaltyAmount') > 0 && !['none', 'recovered', 'resolved', 'inactive', 'deleted'].includes(status)
+  return moneyValue(record, 'penaltyAmount') > 0 && ![
+    'none',
+    'recovered',
+    'resolved',
+    'inactive',
+    'deleted',
+    'deducted_on_closure',
+  ].includes(status)
 }
 
 export const listenBachatPenalties = ({
@@ -842,6 +926,262 @@ export const listenBachatClosuresByCustomer = ({
       onError?.(error)
     },
   )
+}
+
+export const getLatestBachatClosureByCustomer = async ({
+  customerId,
+  currentUser,
+} = {}) => {
+  const normalizedId = normalizeText(customerId)
+  if (!normalizedId) return null
+
+  try {
+    const snapshot = await getDocs(
+      query(
+        collection(db, COLLECTIONS.bachatClosures),
+        where('customerId', '==', normalizedId),
+        orderBy('createdAt', 'desc'),
+        limit(1),
+      ),
+    )
+    return snapshot.docs.length ? { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } : null
+  } catch (error) {
+    debugBachatPermission({
+      operation: 'query',
+      collectionName: COLLECTIONS.bachatClosures,
+      docPath: COLLECTIONS.bachatClosures,
+      currentUser,
+      error,
+    })
+    throw error
+  }
+}
+
+export const listenBachatClosures = ({
+  currentUser,
+  pageSize = 1000,
+} = {}, callback, onError) => {
+  const constraints = []
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.push(where('collectorId', '==', currentUser.userId))
+  }
+  constraints.push(limit(pageLimit(pageSize, 200, 1000)))
+
+  return onSnapshot(
+    query(collection(db, COLLECTIONS.bachatClosures), ...constraints),
+    (snapshot) => {
+      const rows = docsWithIds(snapshot)
+        .filter((record) => normalizeText(record.status || 'closed') === 'closed')
+        .sort((first, second) =>
+          normalizeText(second.closureDate || second.closedOn).localeCompare(
+            normalizeText(first.closureDate || first.closedOn),
+          ),
+        )
+      callback(rows)
+    },
+    (error) => {
+      debugBachatPermission({
+        operation: 'listen',
+        collectionName: COLLECTIONS.bachatClosures,
+        docPath: COLLECTIONS.bachatClosures,
+        currentUser,
+        error,
+      })
+      onError?.(error)
+    },
+  )
+}
+
+export const permanentlyCloseBachatAccount = async ({
+  customerId,
+  closureReason = '',
+  currentUser,
+  closureDate = todayKey(),
+} = {}) => {
+  const normalizedCustomerId = normalizeText(customerId)
+  if (!normalizedCustomerId) throw new Error('Customer ID is required.')
+
+  const customerReference = customerRef(normalizedCustomerId)
+  const accountReference = doc(db, COLLECTIONS.bachatAccounts, normalizedCustomerId)
+  const summaryReference = doc(db, COLLECTIONS.bachatSummary, 'main')
+  const customerFinancialReference = doc(db, COLLECTIONS.customerFinancials, normalizedCustomerId)
+  const closureReference = doc(collection(db, COLLECTIONS.bachatClosures))
+  const normalizedClosureDate = dateKeyFromDate(closureDate || todayKey())
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const [customerSnapshot, accountSnapshot, summarySnapshot] = await Promise.all([
+        transaction.get(customerReference),
+        transaction.get(accountReference),
+        transaction.get(summaryReference),
+      ])
+
+      if (!customerSnapshot.exists()) {
+        throw new Error('Customer record was not found.')
+      }
+      if (!accountSnapshot.exists()) {
+        throw new Error('Bachat account was not found for this customer.')
+      }
+
+      const customerData = customerSnapshot.data()
+      const accountData = { id: accountSnapshot.id, ...accountSnapshot.data() }
+      if (!isActiveBachatAccount(accountData)) {
+        throw new Error('Only active Bachat accounts can be permanently closed.')
+      }
+
+      const settlement = computePermanentBachatSettlement(accountData, normalizedClosureDate)
+      const customerName = normalizeText(
+        settlement.customerName ||
+          customerData.fullName ||
+          customerData.ownerName ||
+          customerData.shopName,
+      )
+      const collectorId = normalizeText(
+        accountData.collectorId || customerData.assignedCollectorId || currentUser?.userId,
+      )
+      const collectorName = normalizeText(
+        accountData.collectorName ||
+          customerData.assignedCollectorName ||
+          currentUser?.fullName ||
+          currentUser?.email,
+      )
+      const originalEndDate = settlement.originalEndDate
+      const existingFlags = buildModuleFlags(customerData.moduleFlags)
+      const nextModuleFlags = buildModuleFlags(existingFlags, { bachat: false })
+      const activeDailyExpected = moneyValue(accountData, 'dailyAmount')
+      const hadMissedPayments = numberValue(accountData.missedMonths) > 0
+      const penaltyPaise = moneyToPaise(settlement.totalPenalty)
+
+      transaction.set(closureReference, {
+        customerId: normalizedCustomerId,
+        customerName,
+        closureDate: normalizedClosureDate,
+        closureReason: normalizeText(closureReason),
+        startDate: settlement.startDate,
+        originalEndDate,
+        durationMonths: settlement.durationMonths,
+        durationCompletedMonths: settlement.durationCompletedMonths,
+        remainingDurationMonths: settlement.remainingDurationMonths,
+        durationDays: settlement.durationDays,
+        durationCompletedDays: settlement.durationCompletedDays,
+        remainingDurationDays: settlement.remainingDurationDays,
+        totalSavings: settlement.totalSavings,
+        totalSavingsPaise: moneyToPaise(settlement.totalSavings),
+        pendingAmount: settlement.pendingAmount,
+        pendingAmountPaise: moneyToPaise(settlement.pendingAmount),
+        pendingActiveDaysTillYesterday: settlement.pendingActiveDaysTillYesterday,
+        expectedAmountTillYesterday: settlement.expectedAmountTillYesterday,
+        expectedAmountTillYesterdayPaise: moneyToPaise(settlement.expectedAmountTillYesterday),
+        pendingTotalCollectedAmount: settlement.pendingTotalCollectedAmount,
+        pendingTotalCollectedAmountPaise: moneyToPaise(settlement.pendingTotalCollectedAmount),
+        totalPenalty: settlement.totalPenalty,
+        totalPenaltyPaise: penaltyPaise,
+        penaltyDeducted: settlement.penaltyDeducted,
+        penaltyDeductedPaise: penaltyPaise,
+        interestAmount: settlement.interestAmount,
+        interestAmountPaise: moneyToPaise(settlement.interestAmount),
+        rewardAmount: settlement.rewardAmount,
+        rewardAmountPaise: moneyToPaise(settlement.rewardAmount),
+        finalSettlementAmount: settlement.finalSettlementAmount,
+        finalSettlementAmountPaise: moneyToPaise(settlement.finalSettlementAmount),
+        interestEligible: settlement.interestEligible,
+        rewardEligible: settlement.rewardEligible,
+        rule: settlement.rule,
+        closureType: 'permanent',
+        status: 'closed',
+        collectorId,
+        collectorName,
+        createdById: currentUser?.userId || '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+
+      transaction.set(
+        accountReference,
+        {
+          status: 'permanently_closed',
+          accountStatus: 'permanently_closed',
+          closureDate: normalizedClosureDate,
+          finalSettlementAmount: settlement.finalSettlementAmount,
+          finalSettlementAmountPaise: moneyToPaise(settlement.finalSettlementAmount),
+          closureType: 'permanent',
+          bachatRejoinBlockedUntil: originalEndDate,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+
+      transaction.set(
+        customerReference,
+        {
+          moduleFlags: nextModuleFlags,
+          bachatRejoinBlockedUntil: originalEndDate,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+
+      if (penaltyPaise > 0) {
+        transaction.set(
+          doc(db, COLLECTIONS.bachatPenalties, normalizedCustomerId),
+          {
+            penaltyStatus: 'deducted_on_closure',
+            recoveryStatus: 'deducted_on_closure',
+            closureDate: normalizedClosureDate,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        )
+      }
+
+      transaction.set(
+        summaryReference,
+        buildBachatSummaryPatch({
+          summaryData: summarySnapshot.exists() ? summarySnapshot.data() : {},
+          nowDateKey: todayKey(),
+          deltas: {
+            activeAccounts: -1,
+            activeDailyExpected: -activeDailyExpected,
+            missedPayments: hadMissedPayments ? -1 : 0,
+            penalties: -settlement.totalPenalty,
+            permanentClosures: 1,
+          },
+        }),
+        { merge: true },
+      )
+
+      transaction.set(
+        customerFinancialReference,
+        {
+          customerId: normalizedCustomerId,
+          activeModules: arrayRemove('bachat'),
+          penalties: 0,
+          penaltiesPaise: 0,
+          pendingAmount: 0,
+          pendingAmountPaise: 0,
+          bachatFinalSettlementAmount: settlement.finalSettlementAmount,
+          bachatFinalSettlementAmountPaise: moneyToPaise(settlement.finalSettlementAmount),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      )
+    })
+  } catch (error) {
+    debugBachatPermission({
+      operation: 'transaction:permanentClosure',
+      collectionName: COLLECTIONS.bachatClosures,
+      docPath: `${COLLECTIONS.bachatClosures}/${closureReference.id}`,
+      currentUser,
+      error,
+      extra: {
+        customerId: normalizedCustomerId,
+        closureDate: normalizedClosureDate,
+      },
+    })
+    throw error
+  }
+
+  return getBachatAccount(normalizedCustomerId)
 }
 
 export const getActiveBachatAccounts = async ({ currentUser, pageSize = 500 } = {}) => {
@@ -913,7 +1253,7 @@ export const getBachatCollectionCandidateStatus = async ({
   const moduleFlags = buildModuleFlags(customerData.moduleFlags)
   const hasBachatFlag = Boolean(moduleFlags.bachat)
   const hasBachatAccount = Boolean(account)
-  const isAccountActive = hasBachatAccount && normalizeText(account.status || 'active') === 'active'
+  const isAccountActive = hasBachatAccount && isActiveBachatAccount(account)
   const canCollect = hasBachatFlag && isAccountActive
   const reason = !hasBachatFlag
     ? 'flag_disabled'
@@ -1077,6 +1417,8 @@ export const getBachatEnrollmentStatus = async ({
     moduleFlags: buildModuleFlags(customerSnapshot.data()?.moduleFlags),
   }
   const hasBachatFlag = Boolean(customer.moduleFlags.bachat)
+  const blockedUntil = normalizeText(customer.bachatRejoinBlockedUntil)
+  const isRejoinBlocked = Boolean(blockedUntil && blockedUntil > todayKey())
 
   if (!customerSnapshot.data()?.moduleFlags) {
     updateDoc(customerReference, {
@@ -1087,6 +1429,20 @@ export const getBachatEnrollmentStatus = async ({
   }
 
   const account = await getBachatAccount(normalizedCustomerId)
+  const hasActiveAccount = Boolean(account && isActiveBachatAccount(account))
+  const hasClosedAccount = Boolean(account && isPermanentlyClosedBachatAccount(account))
+  if (isRejoinBlocked && !hasActiveAccount) {
+    return {
+      customer,
+      account,
+      hasBachatFlag,
+      isEnrolled: false,
+      isRejoinBlocked: true,
+      blockedUntil,
+      reason: 'rejoin_blocked',
+    }
+  }
+
   if (!account && hasBachatFlag) {
     return {
       customer,
@@ -1097,7 +1453,7 @@ export const getBachatEnrollmentStatus = async ({
     }
   }
 
-  if (account && !hasBachatFlag) {
+  if (hasActiveAccount && !hasBachatFlag) {
     updateDoc(customerReference, {
       moduleFlags: buildModuleFlags(customer.moduleFlags, { bachat: true }),
       ...customerFinanceCleanupPatch(),
@@ -1113,18 +1469,25 @@ export const getBachatEnrollmentStatus = async ({
     extra: {
       hasBachatFlag,
       hasAccount: Boolean(account),
+      isRejoinBlocked,
     },
   })
 
   return {
     customer: {
       ...customer,
-      moduleFlags: buildModuleFlags(customer.moduleFlags, { bachat: Boolean(account) || hasBachatFlag }),
+      moduleFlags: buildModuleFlags(customer.moduleFlags, { bachat: hasActiveAccount || hasBachatFlag }),
     },
     account,
     hasBachatFlag,
-    isEnrolled: Boolean(account),
-    reason: account ? (hasBachatFlag ? 'flag_and_account' : 'account_only') : 'not_enrolled',
+    isEnrolled: hasActiveAccount,
+    isRejoinBlocked: false,
+    blockedUntil,
+    reason: hasActiveAccount
+      ? (hasBachatFlag ? 'flag_and_account' : 'account_only')
+      : hasClosedAccount
+        ? 'permanently_closed'
+        : 'not_enrolled',
   }
 }
 
@@ -1165,11 +1528,16 @@ export const enrollCustomerToBachat = async ({
       if (!customerSnapshot.exists()) {
         throw new Error('Customer record was not found.')
       }
-      if (accountSnapshot.exists()) {
+      const customerData = customerSnapshot.data()
+      const nowKey = todayKey()
+      const blockedUntil = normalizeText(customerData.bachatRejoinBlockedUntil)
+      if (blockedUntil && blockedUntil > nowKey) {
+        throw new Error('Customer cannot enroll in Bachat until original maturity date.')
+      }
+      if (accountSnapshot.exists() && isActiveBachatAccount(accountSnapshot.data())) {
         throw new Error('Customer already enrolled in Bachat module.')
       }
 
-      const customerData = customerSnapshot.data()
       const collectorId = normalizeText(
         payload.collectorId ||
           customerData.assignedCollectorId ||
@@ -1183,7 +1551,6 @@ export const enrollCustomerToBachat = async ({
           currentUser?.email ||
           '',
       )
-      const nowKey = todayKey()
       const nextModuleFlags = buildModuleFlags(customerData.moduleFlags, { bachat: true })
 
       transaction.set(accountReference, {
@@ -1595,7 +1962,7 @@ export const createBachatCollection = async ({
       if (!moduleFlags.bachat) {
         throw new Error('Customer is not enrolled in Bachat module.')
       }
-      if (normalizeText(accountData.status || 'active') !== 'active') {
+      if (!isActiveBachatAccount(accountData)) {
         throw new Error('Bachat account is not active.')
       }
 
@@ -1704,9 +2071,11 @@ export default {
   BACHAT_RULES,
   calculateBachatInactiveGap,
   calculateBachatLiveMetrics,
+  calculateBachatPendingAmount,
   calculateProgressiveBachatPenalty,
   buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
+  computePermanentBachatSettlement,
   listenBachatSummary,
   listenActiveBachatAccounts,
   listenBachatCollections,
@@ -1719,12 +2088,15 @@ export default {
   listenBachatPenalties,
   listenBachatPenaltiesByCustomer,
   listenBachatClosuresByCustomer,
+  getLatestBachatClosureByCustomer,
+  listenBachatClosures,
   getActiveBachatAccounts,
   getActiveBachatAccountsPage,
   getBachatCollectionsByDate,
   getLatestBachatPenaltiesForCustomers,
   getBachatCollectionCandidateStatus,
   enrollCustomerToBachat,
+  permanentlyCloseBachatAccount,
   applyBachatCollectionV2InTransaction,
   createBachatCollection,
 }

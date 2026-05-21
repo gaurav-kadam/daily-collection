@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import toast from 'react-hot-toast'
 import { FiArrowLeft, FiFileText, FiUsers } from 'react-icons/fi'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import Loader from '../components/Loader'
 import Modal from '../components/Modal'
 import StatusBadge from '../components/customers/StatusBadge'
 import useAuth from '../hooks/useAuth'
 import {
   BACHAT_RULES,
+  calculateBachatPendingAmount,
   buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
+  computePermanentBachatSettlement,
   getBachatCollectionsByCustomer,
   getBachatPenaltyRecoveryHistory,
   listenBachatAccount,
   listenBachatClosuresByCustomer,
   listenBachatPenaltiesByCustomer,
   listenRecentBachatCollections,
+  permanentlyCloseBachatAccount,
 } from '../services/bachatService'
 import { getOptimizedImageUrl } from '../services/cloudinaryService'
 import customerService from '../services/customerService'
-import { moneyValue, numberValue, todayKey } from '../services/firestoreService'
+import { daysBetween, moneyValue, numberValue, todayKey } from '../services/firestoreService'
 import { formatDate } from '../utils/date'
 import { formatCurrency } from '../utils/format'
 
@@ -87,8 +91,33 @@ function PenaltyStatusPill({ status }) {
 
 const keyFromValue = (value) => String(value || '').trim().toLowerCase()
 
+const hasMoneyField = (record, field) =>
+  record?.[field] !== undefined || record?.[`${field}Paise`] !== undefined
+
+const moneyValueWithFallback = (primary, field, fallback = {}, fallbackField = field) =>
+  hasMoneyField(primary, field) ? moneyValue(primary, field) : moneyValue(fallback, fallbackField)
+
+const pluralizeDays = (days) => `${days} day${days === 1 ? '' : 's'}`
+
+const closureCompletedDays = (closure = {}, account = {}) => {
+  const storedDays = numberValue(closure.durationCompletedDays)
+  if (storedDays > 0 || closure.durationCompletedDays === 0) return storedDays
+  const startDate = closure.startDate || account.startDateKey || account.startDate
+  const closureDate = closure.closureDate || closure.closedOn || todayKey()
+  return daysBetween(startDate, closureDate)
+}
+
+const formatClosureDuration = (completedDays) => pluralizeDays(Math.max(numberValue(completedDays), 0))
+
+const formatRemainingDuration = (remainingDays, remainingMonths) => {
+  const days = numberValue(remainingDays)
+  if (days > 0 || remainingDays === 0) return pluralizeDays(Math.max(days, 0))
+  return `${numberValue(remainingMonths)} months`
+}
+
 function BachatCustomerProfilePage() {
   const { customerId } = useParams()
+  const navigate = useNavigate()
   const { user } = useAuth()
 
   const [customer, setCustomer] = useState(null)
@@ -113,6 +142,10 @@ function BachatCustomerProfilePage() {
   const [penaltyRecoveryRows, setPenaltyRecoveryRows] = useState([])
   const [penaltyRecoveryLoading, setPenaltyRecoveryLoading] = useState(false)
   const [penaltyRecoveryError, setPenaltyRecoveryError] = useState('')
+  const [closureSummaryOpen, setClosureSummaryOpen] = useState(false)
+  const [closureReason, setClosureReason] = useState('')
+  const [closureSaving, setClosureSaving] = useState(false)
+  const [closureActionError, setClosureActionError] = useState('')
 
   useEffect(() => {
     let isMounted = true
@@ -267,6 +300,16 @@ function BachatCustomerProfilePage() {
     loadPenaltyRecoveryHistory()
   }
 
+  const openClosurePendingDetails = () => {
+    if (closureSaving) return
+    navigate(`/bachat/collections?customerId=${encodeURIComponent(customer?.customerId || customer?.id || customerId)}&focus=pending`)
+  }
+
+  const openClosurePenaltyDetails = () => {
+    if (closureSaving) return
+    navigate(`/bachat/collections?customerId=${encodeURIComponent(customer?.customerId || customer?.id || customerId)}&focus=penalty`)
+  }
+
   const details = useMemo(() => {
     if (!account) return null
     const dailyAmount = moneyValue(account, 'dailyAmount')
@@ -275,7 +318,7 @@ function BachatCustomerProfilePage() {
     const maturityReward = moneyValue(account, 'maturityReward')
     const maturityAmount = moneyValue(account, 'maturityAmount')
     const totalCollected = moneyValue(account, 'totalCollected')
-    const pendingAmount = moneyValue(account, 'pendingAmount')
+    const pendingAmount = calculateBachatPendingAmount(account).pendingAmount
     const penaltyAmount = moneyValue(account, 'penaltyAmount')
     const paidMonths = numberValue(account.paidMonths)
     const missedMonths = numberValue(account.missedMonths)
@@ -314,13 +357,68 @@ function BachatCustomerProfilePage() {
     numberValue(account?.missedMonths) > 0 ||
     moneyValue(account, 'penaltyAmount') > 0
 
+  const titleName = customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
+  const accountStatus = keyFromValue(account?.accountStatus || account?.status || 'active')
+  const isBachatActive = Boolean(account) && (!accountStatus || accountStatus === 'active')
+  const isPermanentlyClosed =
+    !isBachatActive &&
+    (
+      accountStatus === 'permanently_closed' ||
+      keyFromValue(latestClosure?.closureType) === 'permanent' ||
+      keyFromValue(latestClosure?.status) === 'closed'
+    )
+  const closureSettlement = useMemo(() => {
+    if (!account) return null
+    const settlement = computePermanentBachatSettlement(account)
+    return {
+      ...settlement,
+      customerName: titleName,
+      customerId: customer?.customerId || customer?.id || customerId,
+    }
+  }, [account, customer?.customerId, customer?.id, customerId, titleName])
+
+  const openClosureSummary = () => {
+    setClosureActionError('')
+    setClosureSummaryOpen(true)
+  }
+
+  const confirmPermanentClosure = async () => {
+    if (!account || !user) return
+
+    setClosureSaving(true)
+    setClosureActionError('')
+    try {
+      await permanentlyCloseBachatAccount({
+        customerId: customer?.customerId || customer?.id || customerId,
+        closureReason,
+        currentUser: user,
+      })
+      setCustomer((previous) =>
+        previous
+          ? {
+              ...previous,
+              moduleFlags: {
+                ...(previous.moduleFlags || {}),
+                bachat: false,
+              },
+              bachatRejoinBlockedUntil: closureSettlement?.originalEndDate,
+            }
+          : previous,
+      )
+      setClosureSummaryOpen(false)
+      setClosureReason('')
+      toast.success('Bachat account permanently closed.')
+    } catch (error) {
+      setClosureActionError(error.message || 'Unable to permanently close Bachat account.')
+    } finally {
+      setClosureSaving(false)
+    }
+  }
+
   const profilePhoto = getOptimizedImageUrl(
     customer?.profilePhoto || customer?.profilePhotoUrl || customer?.photoUrl || customer?.photo,
     { width: 224, height: 224, crop: 'fill' },
   )
-
-  const titleName = customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
-
   if (loading) {
     return <Loader text="Loading Bachat profile..." />
   }
@@ -371,6 +469,11 @@ function BachatCustomerProfilePage() {
             <div className="mt-3">
               <StatusBadge status={customer.status} />
             </div>
+            {isPermanentlyClosed && (
+              <span className="mt-2 inline-flex rounded-lg bg-rose-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-rose-700">
+                Permanently Closed
+              </span>
+            )}
           </div>
 
           <div className="mt-5 space-y-4">
@@ -418,6 +521,17 @@ function BachatCustomerProfilePage() {
                   )}
                 />
               </div>
+              {isBachatActive && (
+                <div className="flex justify-end border-t border-slate-200 pt-4">
+                  <button
+                    type="button"
+                    className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400"
+                    onClick={openClosureSummary}
+                  >
+                    Permanent Closure
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </article>
@@ -518,11 +632,13 @@ function BachatCustomerProfilePage() {
             <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{closureError}</p>
           ) : latestClosure ? (
             <div className="grid gap-3 sm:grid-cols-2">
-              <SummaryCard label="Closure Type" value={latestClosure.closureType || 'closed'} tone="amber" />
+              <SummaryCard label="Closure Type" value="Permanently Closed" tone="rose" />
               <SummaryCard
-                label="Payout Amount"
+                label="Final Settlement"
                 value={formatCurrency(
-                  moneyValue(latestClosure, 'payoutAmount') || moneyValue(latestClosure, 'settlementAmount'),
+                  moneyValue(latestClosure, 'finalSettlementAmount') ||
+                    moneyValue(latestClosure, 'payoutAmount') ||
+                    moneyValue(latestClosure, 'settlementAmount'),
                 )}
                 tone="emerald"
               />
@@ -531,7 +647,37 @@ function BachatCustomerProfilePage() {
                 value={formatDate(latestClosure.closureDate || latestClosure.closedOn || latestClosure.createdAt)}
                 tone="slate"
               />
-              <SummaryCard label="Status" value={latestClosure.status || 'closed'} tone="cyan" />
+              <SummaryCard
+                label="Interest Given"
+                value={formatCurrency(moneyValue(latestClosure, 'interestAmount'))}
+                tone="cyan"
+              />
+              <SummaryCard
+                label="Reward Given"
+                value={formatCurrency(moneyValue(latestClosure, 'rewardAmount'))}
+                tone="emerald"
+              />
+              <SummaryCard
+                label="Penalty Deducted"
+                value={formatCurrency(
+                  moneyValueWithFallback(latestClosure, 'penaltyDeducted', latestClosure, 'totalPenalty'),
+                )}
+                tone="rose"
+              />
+              <SummaryCard
+                label="Duration Completed"
+                value={formatClosureDuration(closureCompletedDays(latestClosure, account))}
+                tone="amber"
+              />
+              <SummaryCard
+                label="Pending At Closure"
+                value={formatCurrency(
+                  hasMoneyField(latestClosure, 'pendingAmount')
+                    ? moneyValue(latestClosure, 'pendingAmount')
+                    : calculateBachatPendingAmount(account).pendingAmount,
+                )}
+                tone="amber"
+              />
             </div>
           ) : (
             <p className="rounded-lg bg-cyan-50 px-3 py-2 text-sm text-cyan-900">
@@ -540,6 +686,118 @@ function BachatCustomerProfilePage() {
           )}
         </article>
       </section>
+
+      <Modal
+        isOpen={closureSummaryOpen}
+        title="Permanent Closure Summary"
+        onClose={() => {
+          if (!closureSaving) setClosureSummaryOpen(false)
+        }}
+        sizeClass="max-w-4xl"
+        panelClass="max-h-[90vh] overflow-y-auto"
+      >
+        {closureSettlement && (
+          <div className="space-y-5">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <SummaryCard label="Customer Name" value={closureSettlement.customerName} />
+              <SummaryCard label="Customer ID" value={closureSettlement.customerId} />
+              <SummaryCard label="Start Date" value={formatDate(closureSettlement.startDate)} />
+              <SummaryCard label="Original End Date" value={formatDate(closureSettlement.originalEndDate)} />
+              <SummaryCard label="Daily Amount" value={formatCurrency(closureSettlement.dailyAmount)} tone="cyan" />
+              <SummaryCard label="Total Savings" value={formatCurrency(closureSettlement.totalSavings)} tone="emerald" />
+              <SummaryCard
+                label="Pending Amount"
+                value={formatCurrency(closureSettlement.pendingAmount)}
+                tone="amber"
+                onClick={openClosurePendingDetails}
+              />
+              <SummaryCard
+                label="Penalty Deducted"
+                value={formatCurrency(closureSettlement.penaltyDeducted)}
+                tone="rose"
+                onClick={openClosurePenaltyDetails}
+              />
+              <SummaryCard
+                label="Duration Completed"
+                value={formatClosureDuration(closureSettlement.durationCompletedDays)}
+                tone="amber"
+              />
+              <SummaryCard
+                label="Remaining Duration"
+                value={formatRemainingDuration(
+                  closureSettlement.remainingDurationDays,
+                  closureSettlement.remainingDurationMonths,
+                )}
+                tone="slate"
+              />
+              <SummaryCard
+                label="Interest Eligible"
+                value={closureSettlement.interestEligible ? `Yes - ${formatCurrency(closureSettlement.interestAmount)}` : 'No'}
+                tone="cyan"
+              />
+              <SummaryCard
+                label="Reward Eligible"
+                value={closureSettlement.rewardEligible ? `Yes - ${formatCurrency(closureSettlement.rewardAmount)}` : 'No'}
+                tone="emerald"
+              />
+              <SummaryCard
+                label="Final Settlement Amount"
+                value={formatCurrency(closureSettlement.finalSettlementAmount)}
+                tone="emerald"
+              />
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              <p className="font-semibold text-slate-900">Settlement Formula</p>
+              <p className="mt-1">
+                Total Savings + Interest + Reward - Penalty Deducted =
+                {' '}{formatCurrency(closureSettlement.finalSettlementAmount)}
+              </p>
+              <p className="mt-2 text-xs text-slate-500">
+                {formatCurrency(closureSettlement.totalSavings)} + {formatCurrency(closureSettlement.interestAmount)} + {formatCurrency(closureSettlement.rewardAmount)} - {formatCurrency(closureSettlement.penaltyDeducted)}
+              </p>
+              <p className="mt-2 text-xs text-slate-500">
+                Pending amount is shown for closure context and is not added again to the settlement.
+              </p>
+            </div>
+
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium text-slate-700">Closure Reason</span>
+              <textarea
+                className="input-field min-h-24"
+                value={closureReason}
+                onChange={(event) => setClosureReason(event.target.value)}
+                placeholder="Reason for permanent closure"
+              />
+            </label>
+
+            {closureActionError && (
+              <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                {closureActionError}
+              </p>
+            )}
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setClosureSummaryOpen(false)}
+                disabled={closureSaving}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={confirmPermanentClosure}
+                disabled={closureSaving}
+              >
+                {closureSaving ? 'Closing...' : 'Confirm Permanent Closure'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         isOpen={historyOpen}
@@ -557,7 +815,10 @@ function BachatCustomerProfilePage() {
               <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
                 <tr>
                   <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">Amount</th>
+                  <th className="px-4 py-3">Collected</th>
+                  <th className="px-4 py-3">Pending Created</th>
+                  <th className="px-4 py-3">Pending Recovered</th>
+                  <th className="px-4 py-3">Penalty Recovered</th>
                   <th className="px-4 py-3">Collector</th>
                   <th className="px-4 py-3">Method</th>
                   <th className="px-4 py-3">Status</th>
@@ -567,7 +828,10 @@ function BachatCustomerProfilePage() {
                 {historyRows.map((item) => (
                   <tr key={item.txId || item.id}>
                     <td className="px-4 py-3 text-slate-700">{formatDate(item.paymentDate || item.date)}</td>
-                    <td className="px-4 py-3 font-semibold text-slate-950">{formatCurrency(moneyValue(item, 'amount'))}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-950">{formatCurrency(moneyValue(item, 'amountCollected'))}</td>
+                    <td className="px-4 py-3 text-slate-700">{formatCurrency(moneyValue(item, 'pendingCreated'))}</td>
+                    <td className="px-4 py-3 text-slate-700">{formatCurrency(moneyValue(item, 'pendingRecovered'))}</td>
+                    <td className="px-4 py-3 text-slate-700">{formatCurrency(moneyValue(item, 'penaltyRecovered'))}</td>
                     <td className="px-4 py-3 text-slate-600">{item.collectorName || '-'}</td>
                     <td className="px-4 py-3 text-slate-600">{item.paymentMethod || '-'}</td>
                     <td className="px-4 py-3 text-slate-600">{item.status || '-'}</td>
@@ -575,7 +839,7 @@ function BachatCustomerProfilePage() {
                 ))}
                 {!historyRows.length && !historyLoading && (
                   <tr>
-                    <td className="px-4 py-8 text-center text-slate-500" colSpan="5">
+                    <td className="px-4 py-8 text-center text-slate-500" colSpan="8">
                       No history available.
                     </td>
                   </tr>

@@ -27,7 +27,7 @@ import {
   paiseToMoney,
   todayKey,
 } from './firestoreService'
-import { calculateBachatLiveMetrics } from './bachatService'
+import { calculateBachatLiveMetrics, calculateBachatPendingAmount } from './bachatService'
 import { calculateLoanMetrics, updateLoanPenalty } from './loanService'
 
 const buildScopedQuery = (collectionName, currentUser, collectorField = 'collectorId') => {
@@ -265,7 +265,7 @@ const getBachatPendingCustomerRows = (accounts) =>
   accounts
     .map((account) => {
       const customerId = account.customerId || account.id
-      const pendingAmount = moneyValue(account, 'pendingAmount')
+      const pendingSummary = calculateBachatPendingAmount(account)
       return {
         ...account,
         customerId,
@@ -273,8 +273,8 @@ const getBachatPendingCustomerRows = (accounts) =>
         ownerName: account.ownerName || account.fullName || account.customerName || account.shopName,
         customerName: account.customerName || account.fullName || account.ownerName || account.shopName,
         collectorName: account.collectorName || account.assignedCollectorName,
-        pendingAmount,
-        pendingDays: numberValue(account.pendingDays) || numberValue(account.overdueDays),
+        pendingAmount: pendingSummary.pendingAmount,
+        pendingDays: pendingSummary.activeDaysTillYesterday,
         missedToday: false,
       }
     })

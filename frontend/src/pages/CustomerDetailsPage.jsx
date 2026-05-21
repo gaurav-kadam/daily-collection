@@ -87,7 +87,9 @@ function CustomerDetailsPage() {
     if (!customer) return undefined
 
     const flag = moduleFlags[activeModule]
-    const isEnrolled = Boolean(customer.moduleFlags?.[flag])
+    const isEnrolled =
+      Boolean(customer.moduleFlags?.[flag]) ||
+      (activeModule === 'bachat' && Boolean(customer.bachatRejoinBlockedUntil))
 
     if (!isEnrolled) {
       setModuleStatus((previous) => ({
@@ -111,7 +113,7 @@ function CustomerDetailsPage() {
         let nextData = null
 
         if (activeModule === 'bachat') {
-          const [account, collectionsResponse, penaltiesByCustomer] = await Promise.all([
+          const [account, collectionsResponse, penaltiesByCustomer, closure] = await Promise.all([
             bachatService.getBachatAccount(accountId),
             bachatService.getBachatCollectionsByCustomer({
               customerId: accountId,
@@ -122,11 +124,16 @@ function CustomerDetailsPage() {
               customerIds: [accountId],
               currentUser: user,
             }),
+            bachatService.getLatestBachatClosureByCustomer({
+              customerId: accountId,
+              currentUser: user,
+            }),
           ])
           nextData = {
             account,
             collections: collectionsResponse.results || [],
             penalty: penaltiesByCustomer[accountId] || null,
+            closure,
           }
         }
 
