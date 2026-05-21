@@ -948,7 +948,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       { key: 'activeAccounts', label: 'Active Accounts', value: displaySummary.activeAccounts, icon: FiUsers },
       {
         key: 'todayTarget',
-        label: "Today's Target",
+        label: "Today's Pending Customer",
         value: todayTargetAmount,
         currency: true,
         icon: FiCalendar,
