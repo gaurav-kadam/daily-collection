@@ -238,72 +238,65 @@ const customerRouteId = (customer) => customer?.id || customer?.customerId
 const customerLabel = (customer) => customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
 
 const getTodayPaidAmount = (collectionRecord = {}) => {
-  if (
-    collectionRecord.amountCollected !== undefined ||
-    collectionRecord.amountCollectedPaise !== undefined
-  ) {
-    return moneyValue(collectionRecord, 'amountCollected')
-  }
-  return moneyValue(collectionRecord, 'amount')
+  const totalAmount = moneyValue(collectionRecord, 'amount')
+  if (totalAmount > 0) return totalAmount
+
+  return (
+    moneyValue(collectionRecord, 'amountCollected') +
+    moneyValue(collectionRecord, 'pendingRecovered') +
+    moneyValue(collectionRecord, 'penaltyRecovered')
+  )
 }
 
 const buildBachatTargetRows = (accounts = [], todayCollections = []) => {
   const collectionsByCustomer = new Map()
   todayCollections.forEach((collectionRecord) => {
     const customerId = collectionRecord.customerId || collectionRecord.id
-    if (customerId) collectionsByCustomer.set(customerId, collectionRecord)
+    if (!customerId) return
+    const currentPaid = collectionsByCustomer.get(customerId) || 0
+    collectionsByCustomer.set(customerId, currentPaid + getTodayPaidAmount(collectionRecord))
   })
 
   return accounts
+    .filter((account) => (account.status || 'active') === 'active')
     .map((account) => {
       const customerId = account.customerId || account.id
-      const todayCollection = collectionsByCustomer.get(customerId)
       const dailyAmount = moneyValue(account, 'dailyAmount')
-      const hasTodayCollection = Boolean(todayCollection)
-      const paidToday = todayCollection
-        ? Math.min(getTodayPaidAmount(todayCollection), dailyAmount)
-        : 0
-      const pendingToday = Math.max(dailyAmount - paidToday, 0)
-      const storedPending = moneyValue(account, 'pendingAmount')
-      const pendingRecoveredToday = moneyValue(todayCollection, 'pendingRecovered')
-      const inactivePendingCreatedToday = moneyValue(todayCollection, 'inactivePendingCreated')
-      const hasFreshTodayAccount = Boolean(todayCollection) && account.lastCollectionDate === todayCollection.paymentDate
-      const oldPending = todayCollection
-        ? hasFreshTodayAccount
-          ? Math.max(storedPending - pendingToday, 0)
-          : Math.max(storedPending - pendingRecoveredToday + inactivePendingCreatedToday, 0)
-        : storedPending
-      const totalPending = oldPending + pendingToday
-      const status = paidToday <= 0 && pendingToday > 0
-        ? 'Unpaid Today'
-        : pendingToday > 0
-          ? 'Partial Today'
-          : oldPending > 0
-            ? 'Old Pending'
-            : 'Paid'
+      const paidToday = collectionsByCustomer.get(customerId) || 0
 
       return {
         customerId,
         customerName: customerLabel(account),
         dailyAmount,
-        hasTodayCollection,
         paidToday,
-        pendingToday,
-        oldPending,
-        totalPending,
-        penaltyAmount: moneyValue(account, 'penaltyAmount'),
-        status,
-        lastPaymentDate: account.lastPaymentDate || account.lastCollectionDate || '-',
       }
     })
-    .filter((row) => row.customerId)
-    .sort((first, second) => second.pendingToday - first.pendingToday || second.oldPending - first.oldPending)
+    .filter((row) => row.customerId && row.paidToday === 0)
+    .sort((first, second) => second.dailyAmount - first.dailyAmount)
 }
 
-const buildBachatPendingRows = (accounts = [], todayCollections = []) =>
-  buildBachatTargetRows(accounts, todayCollections)
-    .filter((row) => row.paidToday <= 0)
-    .sort((first, second) => second.totalPending - first.totalPending)
+const buildBachatPendingRows = (accounts = []) => {
+  const rowsByCustomer = new Map()
+
+  accounts.forEach((account) => {
+    const customerId = account.customerId || account.id
+    const totalPending = moneyValue(account, 'pendingAmount')
+    if (!customerId || totalPending <= 0) return
+
+    const existing = rowsByCustomer.get(customerId)
+    if (existing && existing.totalPending >= totalPending) return
+
+    rowsByCustomer.set(customerId, {
+      customerId,
+      customerName: customerLabel(account),
+      totalPending,
+    })
+  })
+
+  return [...rowsByCustomer.values()].sort(
+    (first, second) => second.totalPending - first.totalPending,
+  )
+}
 
 function BachatStatCard({ label, value, currency = false, icon: Icon = FiDatabase, onClick }) {
   return (
@@ -466,8 +459,16 @@ function BachatDashboardView({ user, openEnroll = false }) {
   }, [summary.collectionProgress, summary.todayCollection, summary.todayTarget])
 
   const bachatPendingRows = useMemo(
-    () => buildBachatPendingRows(activeBachatAccounts, todayBachatCollections),
+    () => buildBachatPendingRows(activeBachatAccounts),
+    [activeBachatAccounts],
+  )
+  const bachatTargetRows = useMemo(
+    () => buildBachatTargetRows(activeBachatAccounts, todayBachatCollections),
     [activeBachatAccounts, todayBachatCollections],
+  )
+  const todayTargetAmount = useMemo(
+    () => bachatTargetRows.reduce((sum, row) => sum + row.dailyAmount, 0),
+    [bachatTargetRows],
   )
   const combinedPendingAmount = useMemo(
     () => bachatPendingRows.reduce((sum, row) => sum + row.totalPending, 0),
@@ -708,19 +709,10 @@ function BachatDashboardView({ user, openEnroll = false }) {
         rows: [],
       })
       try {
-        const [accountResponse, collectionResponse] = await Promise.all([
-          getActiveBachatAccounts({ currentUser: user, pageSize: 1000 }),
-          getBachatCollectionsByDate({
-            date: todayKey(),
-            currentUser: user,
-            pageSize: 1000,
-          }),
-        ])
+        const accountResponse = await getActiveBachatAccounts({ currentUser: user, pageSize: 1000 })
         const activeAccounts = accountResponse?.results || []
-        const todayCollections = collectionResponse?.results || []
-        const rows = buildBachatPendingRows(activeAccounts, todayCollections)
+        const rows = buildBachatPendingRows(activeAccounts)
         setActiveBachatAccounts(activeAccounts)
-        setTodayBachatCollections(todayCollections)
         setInsightModal({
           open: true,
           key: cardKey,
@@ -738,7 +730,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       setInsightModal({
         open: true,
         key: cardKey,
-        title: "Today's Target Accounts",
+        title: "Today's Unpaid Customer List",
         loading: true,
         rows: [],
       })
@@ -759,7 +751,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
         setInsightModal({
           open: true,
           key: cardKey,
-          title: "Today's Target Accounts",
+          title: "Today's Unpaid Customer List",
           loading: false,
           rows,
         })
@@ -898,12 +890,18 @@ function BachatDashboardView({ user, openEnroll = false }) {
   const operationalCards = useMemo(
     () => [
       { key: 'activeAccounts', label: 'Active Accounts', value: summary.activeAccounts, icon: FiUsers },
-      { key: 'todayTarget', label: "Today's Target", value: summary.todayTarget, currency: true, icon: FiCalendar },
+      {
+        key: 'todayTarget',
+        label: "Today's Target",
+        value: todayTargetAmount,
+        currency: true,
+        icon: FiCalendar,
+      },
       { key: 'todayCollection', label: "Today's Collection", value: summary.todayCollection, currency: true, icon: MdOutlinePayments },
       { key: 'collectionProgress', label: 'Collection Progress', value: `${Math.round(todayCollectionProgress)}%`, icon: FiTrendingUp },
       {
         key: 'todayPendingAmount',
-        label: "Today's Pending Amount",
+        label: "Today's Pending Accounts",
         value: activeBachatLoading ? summary.todayPendingAmount : combinedPendingAmount,
         currency: true,
         icon: FiAlertTriangle,
@@ -913,7 +911,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       { key: 'maturedAccounts', label: 'Matured Accounts', value: summary.maturedAccounts, icon: FiClock },
       { key: 'prematureClosures', label: 'Premature Closures', value: summary.prematureClosures, icon: FiTrendingDown },
     ],
-    [activeBachatLoading, combinedPendingAmount, summary, todayCollectionProgress],
+    [activeBachatLoading, combinedPendingAmount, summary, todayCollectionProgress, todayTargetAmount],
   )
 
   return (
@@ -1023,7 +1021,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {summaryLoading
+        {summaryLoading || activeBachatLoading
           ? Array.from({ length: 9 }).map((_, index) => (
               <article key={index} className="card h-28 animate-pulse bg-slate-100" />
             ))
@@ -1056,14 +1054,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
                   <tr>
                     <th className="px-3 py-2">Customer Name</th>
                     <th className="px-3 py-2">Customer ID</th>
-                    <th className="px-3 py-2">Daily Amount</th>
-                    <th className="px-3 py-2">Paid Today</th>
-                    <th className="px-3 py-2">Pending Today</th>
-                    <th className="px-3 py-2">Old Pending</th>
-                    <th className="px-3 py-2">Total Pending</th>
-                    <th className="px-3 py-2">Last Payment Date</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Action</th>
+                    <th className="px-3 py-2">Total Pending Amount</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
@@ -1071,22 +1062,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
                     <tr key={row.customerId}>
                       <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
                       <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
-                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.dailyAmount)}</td>
-                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.paidToday)}</td>
-                      <td className="px-3 py-2 text-amber-700">{formatCurrency(row.pendingToday)}</td>
-                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.oldPending)}</td>
                       <td className="px-3 py-2 font-semibold text-slate-950">{formatCurrency(row.totalPending)}</td>
-                      <td className="px-3 py-2 text-slate-600">{row.lastPaymentDate}</td>
-                      <td className="px-3 py-2 text-slate-600">{row.status}</td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="btn-secondary !py-1.5"
-                          onClick={() => openBachatProfile({ customerId: row.customerId })}
-                        >
-                          Open Profile
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1100,11 +1076,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
                   <tr>
                     <th className="px-3 py-2">Customer Name</th>
                     <th className="px-3 py-2">Customer ID</th>
-                    <th className="px-3 py-2">Daily Target</th>
-                    <th className="px-3 py-2">Paid Today</th>
-                    <th className="px-3 py-2">Balance Today</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Action</th>
+                    <th className="px-3 py-2">Daily Amount</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
@@ -1113,18 +1085,6 @@ function BachatDashboardView({ user, openEnroll = false }) {
                       <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
                       <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
                       <td className="px-3 py-2 text-slate-900">{formatCurrency(row.dailyAmount)}</td>
-                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.paidToday)}</td>
-                      <td className="px-3 py-2 text-amber-700">{formatCurrency(row.pendingToday)}</td>
-                      <td className="px-3 py-2 text-slate-600">{row.status}</td>
-                      <td className="px-3 py-2">
-                        <button
-                          type="button"
-                          className="btn-secondary !py-1.5"
-                          onClick={() => openBachatProfile({ customerId: row.customerId })}
-                        >
-                          Open Profile
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1175,9 +1135,9 @@ function BachatDashboardView({ user, openEnroll = false }) {
           {!insightModal.loading && !insightModal.rows.length && insightModal.key !== 'prematureClosures' && (
             <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
               {insightModal.key === 'todayPendingAmount'
-                ? 'No pending collections today'
+                ? 'No pending accounts found.'
                 : insightModal.key === 'todayTarget'
-                  ? "No target accounts available today"
+                  ? "No customers pending for today's collection."
                 : 'No records available for this card right now.'}
             </p>
           )}
