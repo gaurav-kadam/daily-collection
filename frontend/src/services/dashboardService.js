@@ -102,6 +102,13 @@ const getActivePenaltyTotal = (records) =>
     .filter((item) => item.status === 'active')
     .reduce((sum, item) => sum + moneyValue(item, 'penaltyAmount'), 0)
 
+const getActiveBachatPenaltyTotal = (records) =>
+  records.reduce((sum, item) => {
+    const status = String(item.penaltyStatus || item.recoveryStatus || item.status || '').toLowerCase()
+    if (['none', 'recovered', 'resolved', 'inactive', 'deleted'].includes(status)) return sum
+    return sum + moneyValue(item, 'penaltyAmount')
+  }, 0)
+
 const timestampSortValue = (value) => {
   if (!value) return 0
   if (value?.toMillis) return value.toMillis()
@@ -427,6 +434,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     monthPayments: [],
     recentPayments: [],
     penalties: [],
+    bachatPenalties: [],
     financeEntries: [],
   }
   let recomputeHandle = null
@@ -481,9 +489,7 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
     )
     const recentLoanPayments = state.recentPayments.slice(0, 6)
     const totalPenaltyAmount =
-      getActivePenaltyTotal(state.penalties) ||
-      overdueLoans.reduce((sum, loan) => sum + moneyValue(loan, 'penaltyAmount'), 0) +
-        activeBachatAccounts.reduce((sum, account) => sum + moneyValue(account, 'penaltyAmount'), 0)
+      getActivePenaltyTotal(state.penalties) + getActiveBachatPenaltyTotal(state.bachatPenalties)
     const ledger = state.financeEntries
     const ledgerCollections = sumFinanceEntries(ledger, ['collection', 'received', 'income'])
     const totalDeposits = sumFinanceEntries(ledger, ['deposit'])
@@ -803,6 +809,15 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
         limit(100),
       ),
       (snapshot) => updateState('penalties', snapshot),
+      onError,
+    ),
+    onSnapshot(
+      query(
+        collection(db, COLLECTIONS.bachatPenalties),
+        ...scopedBachatConstraints(currentUser),
+        limit(1000),
+      ),
+      (snapshot) => updateState('bachatPenalties', snapshot),
       onError,
     ),
   ]

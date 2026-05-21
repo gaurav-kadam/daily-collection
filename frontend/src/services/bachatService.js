@@ -775,6 +775,37 @@ export const listenBachatPenaltiesByCustomer = ({
   )
 }
 
+const isActiveBachatPenalty = (record = {}) => {
+  const status = normalizeText(record.penaltyStatus || record.recoveryStatus || record.status).toLowerCase()
+  return moneyValue(record, 'penaltyAmount') > 0 && !['none', 'recovered', 'resolved', 'inactive', 'deleted'].includes(status)
+}
+
+export const listenBachatPenalties = ({
+  currentUser,
+  pageSize = 1000,
+} = {}, callback, onError) => {
+  const constraints = []
+  if (currentUser?.role === USER_ROLES.collector) {
+    constraints.push(where('collectorId', '==', currentUser.userId))
+  }
+  constraints.push(limit(pageLimit(pageSize, 500, 1000)))
+
+  return onSnapshot(
+    query(collection(db, COLLECTIONS.bachatPenalties), ...constraints),
+    (snapshot) => callback(docsWithIds(snapshot).filter(isActiveBachatPenalty)),
+    (error) => {
+      debugBachatPermission({
+        operation: 'listen',
+        collectionName: COLLECTIONS.bachatPenalties,
+        docPath: COLLECTIONS.bachatPenalties,
+        currentUser,
+        error,
+      })
+      onError?.(error)
+    },
+  )
+}
+
 export const listenBachatClosuresByCustomer = ({
   customerId,
   currentUser,
@@ -1685,6 +1716,7 @@ export default {
   getBachatCollectionsByCustomer,
   getBachatPenaltyRecoveryHistory,
   listenRecentBachatCollections,
+  listenBachatPenalties,
   listenBachatPenaltiesByCustomer,
   listenBachatClosuresByCustomer,
   getActiveBachatAccounts,

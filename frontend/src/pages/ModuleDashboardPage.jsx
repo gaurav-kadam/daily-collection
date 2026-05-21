@@ -30,6 +30,7 @@ import {
   getBachatEnrollmentStatus,
   listenActiveBachatAccounts,
   listenBachatCollections,
+  listenBachatPenalties,
   listenBachatSummary,
 } from '../services/bachatService'
 import customerService from '../services/customerService'
@@ -376,6 +377,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
   const [activeCustomers, setActiveCustomers] = useState([])
   const [activeBachatAccounts, setActiveBachatAccounts] = useState([])
   const [bachatCollections, setBachatCollections] = useState([])
+  const [bachatPenalties, setBachatPenalties] = useState([])
   const [activeBachatCustomerIds, setActiveBachatCustomerIds] = useState(new Set())
   const [activeBachatLoading, setActiveBachatLoading] = useState(true)
   const [insightModal, setInsightModal] = useState(createInsightModalState())
@@ -399,8 +401,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
           todayCollection: moneyValue(nextSummary, 'todayCollection'),
           todayTarget: moneyValue(nextSummary, 'todayTarget') || moneyValue(nextSummary, 'activeDailyExpected'),
           todayPendingAmount: moneyValue(nextSummary, 'todayPendingAmount'),
-          penalties: moneyValue(nextSummary, 'penalties'),
-          missedPayments: numberValue(nextSummary.missedPayments),
+          penalties: 0,
+          missedPayments: 0,
           maturedAccounts: numberValue(nextSummary.maturedAccounts),
           prematureClosures: numberValue(nextSummary.prematureClosures),
         })
@@ -444,6 +446,14 @@ function BachatDashboardView({ user, openEnroll = false }) {
         setBachatCollections([])
       },
     )
+    const unsubscribePenalties = listenBachatPenalties(
+      { currentUser: user, pageSize: 1000 },
+      (penalties) => setBachatPenalties(penalties),
+      (error) => {
+        toast.error(error?.message || 'Unable to load Bachat penalties.')
+        setBachatPenalties([])
+      },
+    )
     const unsubscribeCustomers = customerService.listenCustomers(
       user,
       (customers) => setActiveCustomers(customers.filter((customer) => customer.status !== 'inactive')),
@@ -456,6 +466,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
     return () => {
       unsubscribeAccounts()
       unsubscribeCollections()
+      unsubscribePenalties()
       unsubscribeCustomers()
     }
   }, [user])
@@ -499,6 +510,28 @@ function BachatDashboardView({ user, openEnroll = false }) {
     () => bachatPendingRows.reduce((sum, row) => sum + row.totalPending, 0),
     [bachatPendingRows],
   )
+  const activePenaltyTotal = useMemo(
+    () => bachatPenalties.reduce((sum, penalty) => sum + moneyValue(penalty, 'penaltyAmount'), 0),
+    [bachatPenalties],
+  )
+  const missedPaymentRows = useMemo(
+    () =>
+      liveBachatMetrics.activeAccounts
+        .map((account) => ({
+          customerId: account.customerId || account.id,
+          customerName: customerLabel(account),
+          missedMonths: numberValue(account.missedMonths),
+          penaltyAmount: moneyValue(account, 'penaltyAmount'),
+          pendingAmount: moneyValue(account, 'pendingAmount'),
+        }))
+        .filter((row) => row.customerId && row.missedMonths > 0)
+        .sort((first, second) => second.missedMonths - first.missedMonths),
+    [liveBachatMetrics.activeAccounts],
+  )
+  const missedPaymentTotal = useMemo(
+    () => missedPaymentRows.reduce((sum, row) => sum + row.missedMonths, 0),
+    [missedPaymentRows],
+  )
   const displaySummary = useMemo(() => {
     if (activeBachatLoading) return summary
 
@@ -512,12 +545,16 @@ function BachatDashboardView({ user, openEnroll = false }) {
       ),
       monthlyCollection: monthlyBachatCollection,
       todayPendingAmount: combinedPendingAmount,
+      penalties: activePenaltyTotal,
+      missedPayments: missedPaymentTotal,
     }
   }, [
     activeBachatLoading,
+    activePenaltyTotal,
     combinedPendingAmount,
     liveBachatMetrics.activeAccounts.length,
     liveBachatMetrics.totalBachatAmount,
+    missedPaymentTotal,
     monthlyBachatCollection,
     summary,
     todayBachatCollections,
@@ -729,6 +766,39 @@ function BachatDashboardView({ user, openEnroll = false }) {
       lastCollectionDate: account.lastCollectionDate || '-',
     }))
 
+  const buildPenaltyRows = (penalties = []) => {
+    const accountsByCustomerId = new Map(
+      liveBachatMetrics.activeAccounts.map((account) => [account.customerId || account.id, account]),
+    )
+    const displayDate = (value) => {
+      if (!value) return '-'
+      if (typeof value === 'string') return value
+      if (value?.toDate) return value.toDate().toISOString().slice(0, 10)
+      return '-'
+    }
+
+    return penalties.map((penalty) => {
+      const customerId = penalty.customerId || penalty.id
+      const account = accountsByCustomerId.get(customerId) || {}
+      return {
+        customerId,
+        customerName:
+          penalty.customerName ||
+          account.fullName ||
+          account.ownerName ||
+          account.shopName ||
+          customerId,
+        dailyAmount: moneyValue(account, 'dailyAmount'),
+        pendingAmount: moneyValue(penalty, 'pendingAmount') || moneyValue(account, 'pendingAmount'),
+        penaltyAmount: moneyValue(penalty, 'penaltyAmount'),
+        status: penalty.penaltyStatus || penalty.recoveryStatus || 'active',
+        lastCollectionDate: displayDate(
+          penalty.lastPenaltyAppliedDate || penalty.lastPaymentDate || penalty.updatedAt,
+        ),
+      }
+    })
+  }
+
   const handleCardClick = async (cardKey) => {
     if (!user) return
 
@@ -751,7 +821,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       setInsightModal({
         open: true,
         key: cardKey,
-        title: "Today's Pending Accounts",
+        title: "Total Pending Amounts",
         loading: true,
         rows: [],
       })
@@ -818,11 +888,23 @@ function BachatDashboardView({ user, openEnroll = false }) {
       return
     }
     if (cardKey === 'penalties') {
-      staticListFromAccounts('Penalty Accounts', (account) => moneyValue(account, 'penaltyAmount') > 0)
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title: 'Penalty Accounts',
+        loading: false,
+        rows: buildPenaltyRows(bachatPenalties),
+      })
       return
     }
     if (cardKey === 'missedPayments') {
-      staticListFromAccounts('Missed Payment Accounts', (account) => numberValue(account.missedMonths) > 0)
+      setInsightModal({
+        open: true,
+        key: cardKey,
+        title: 'Missed Payment Accounts',
+        loading: false,
+        rows: missedPaymentRows,
+      })
       return
     }
     if (cardKey === 'maturedAccounts') {
@@ -956,7 +1038,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
       { key: 'todayCollection', label: "Today's Collection", value: displaySummary.todayCollection, currency: true, icon: MdOutlinePayments },
       {
         key: 'todayPendingAmount',
-        label: "Today's Pending Accounts",
+        label: "Total Pending Amounts",
         value: displaySummary.todayPendingAmount,
         currency: true,
         icon: FiAlertTriangle,
@@ -1132,9 +1214,45 @@ function BachatDashboardView({ user, openEnroll = false }) {
               </table>
             </div>
           )}
+          {!insightModal.loading && insightModal.rows.length > 0 && insightModal.key === 'missedPayments' && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Customer Name</th>
+                    <th className="px-3 py-2">Customer ID</th>
+                    <th className="px-3 py-2">Missed Months</th>
+                    <th className="px-3 py-2">Current Penalty</th>
+                    <th className="px-3 py-2">Pending Amount</th>
+                    <th className="px-3 py-2">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {insightModal.rows.map((row) => (
+                    <tr key={row.customerId}>
+                      <td className="px-3 py-2 font-semibold text-slate-900">{row.customerName}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500">{row.customerId}</td>
+                      <td className="px-3 py-2 text-slate-900">{row.missedMonths}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.penaltyAmount)}</td>
+                      <td className="px-3 py-2 text-slate-900">{formatCurrency(row.pendingAmount)}</td>
+                      <td className="px-3 py-2">
+                        <button
+                          type="button"
+                          className="btn-secondary !py-1.5"
+                          onClick={() => openBachatProfile({ customerId: row.customerId })}
+                        >
+                          Open Profile
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {!insightModal.loading &&
             insightModal.rows.length > 0 &&
-            !['todayPendingAmount', 'todayTarget'].includes(insightModal.key) && (
+            !['todayPendingAmount', 'todayTarget', 'missedPayments'].includes(insightModal.key) && (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-slate-200 text-sm">
                 <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
