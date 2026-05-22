@@ -207,6 +207,19 @@ const resolveBachatPenaltyMonthlyAmount = (
   return moneyValue(account, 'monthlyAmount') || normalizeMoney(dailyAmount * BACHAT_RULES.daysPerMonth)
 }
 
+const resolveBachatCycleAmount = (
+  account = {},
+  settings = BACHAT_TESTING_RULES_DEFAULTS,
+) => {
+  const dailyAmount = moneyValue(account, 'dailyAmount')
+  const normalizedSettings = normalizeBachatRulesSettings(settings)
+  if (normalizedSettings.testingMode) {
+    return normalizeMoney(dailyAmount * resolveBachatPenaltyCycleDays(settings))
+  }
+
+  return resolveBachatPenaltyMonthlyAmount(account, settings)
+}
+
 const bachatRulesSettingsRef = () => doc(db, COLLECTIONS.settings, BACHAT_RULES_SETTINGS_ID)
 
 export const getBachatRulesSettings = async ({ currentUser } = {}) => {
@@ -330,6 +343,87 @@ export const calculateBachatPendingAmount = (account = {}, asOfDate = todayKey()
   }
 }
 
+export const calculateBachatCoveredMonthStatus = (
+  account = {},
+  asOfDate = todayKey(),
+  bachatRulesSettings = BACHAT_TESTING_RULES_DEFAULTS,
+) => {
+  const normalizedSettings = normalizeBachatRulesSettings(bachatRulesSettings)
+  const startDateKey = account?.startDateKey || dateKeyFromDate(account?.startDate) || todayKey()
+  const durationMonths = Math.max(
+    numberValue(account?.durationMonths, BACHAT_RULES.defaultDurationMonths),
+    1,
+  )
+  const totalCollectedPaise = moneyToPaise(
+    moneyValue(account, 'totalCollected') || moneyValue(account, 'totalSavings'),
+  )
+  const cycleAmountPaise = moneyToPaise(resolveBachatCycleAmount(account, normalizedSettings))
+  const paidMonths = cycleAmountPaise > 0
+    ? Math.min(Math.floor(totalCollectedPaise / cycleAmountPaise), durationMonths)
+    : 0
+  const currentMonth = normalizedSettings.testingMode
+    ? Math.min(
+        Math.floor(daysBetween(startDateKey, asOfDate) / resolveBachatPenaltyCycleDays(normalizedSettings)) + 1,
+        durationMonths,
+      )
+    : Math.min(elapsedMonthlyInstallments(startDateKey, asOfDate), durationMonths)
+  const fullyDueMonths = Math.max(currentMonth - 1, 0)
+  const missedMonths = Math.max(fullyDueMonths - paidMonths, 0)
+
+  return {
+    startDate: startDateKey,
+    currentMonth,
+    fullyDueMonths,
+    lastFullyCoveredMonth: paidMonths,
+    paidMonths,
+    missedMonths,
+    expectedAmountTillCurrentMonth: paiseToMoney(fullyDueMonths * cycleAmountPaise),
+    amountActuallyCollected: paiseToMoney(totalCollectedPaise),
+  }
+}
+
+export const deriveBachatAccountStatus = (
+  account = {},
+  asOfDate = todayKey(),
+  bachatRulesSettings = BACHAT_TESTING_RULES_DEFAULTS,
+) => {
+  if (!account) return account
+
+  const coveredStatus = calculateBachatCoveredMonthStatus(account, asOfDate, bachatRulesSettings)
+  const penaltyCycleDays = resolveBachatPenaltyCycleDays(bachatRulesSettings)
+  const grossPenaltyAmount = calculateProgressiveBachatPenalty({
+    missedMonths: coveredStatus.missedMonths,
+    dailyAmount: moneyValue(account, 'dailyAmount'),
+    bachatRulesSettings,
+  })
+  const storedTotalPenalty = moneyValue(account, 'totalPenalty')
+  const storedPendingPenalty = moneyValue(account, 'penaltyAmount')
+  const recoveredPenalty = Math.max(storedTotalPenalty - storedPendingPenalty, 0)
+  const penaltyAmount = normalizeMoney(Math.max(grossPenaltyAmount - recoveredPenalty, 0))
+  const penaltyStatus =
+    grossPenaltyAmount <= 0
+      ? 'none'
+      : penaltyAmount <= 0
+        ? 'recovered'
+        : recoveredPenalty > 0
+          ? 'partial'
+          : 'pending'
+
+  return {
+    ...account,
+    paidMonths: coveredStatus.paidMonths,
+    missedMonths: coveredStatus.missedMonths,
+    overdueDays: coveredStatus.missedMonths * penaltyCycleDays,
+    penaltyCycleDays,
+    penaltyAmount,
+    penaltyAmountPaise: moneyToPaise(penaltyAmount),
+    totalPenalty: grossPenaltyAmount,
+    totalPenaltyPaise: moneyToPaise(grossPenaltyAmount),
+    penaltyStatus,
+    bachatCoverageStatus: coveredStatus,
+  }
+}
+
 export const calculateBachatLiveMetrics = ({
   accounts = [],
   collections = [],
@@ -344,7 +438,7 @@ export const calculateBachatLiveMetrics = ({
     const customerId = resolveBachatCustomerId(account)
     if (!customerId || !isActiveBachatAccount(account)) return false
     return !hasCustomerSource || currentCustomerIds.has(customerId)
-  })
+  }).map((account) => deriveBachatAccountStatus(account))
   const activeCustomerIds = new Set(activeAccounts.map((account) => resolveBachatCustomerId(account)))
   const activeCollections = collections.filter((collectionRecord) =>
     activeCustomerIds.has(resolveBachatCustomerId(collectionRecord)),
@@ -562,7 +656,8 @@ export const buildBachatPenaltyAnalysis = ({
   const monthlyAmount = resolveBachatPenaltyMonthlyAmount(account, bachatRulesSettings)
   const penaltyBase = normalizeMoney(monthlyAmount * BACHAT_RULES.penaltyRate)
   const missedMonths = Math.max(
-    numberValue(penalty?.missedMonths, numberValue(account?.missedMonths)),
+    numberValue(account?.missedMonths),
+    numberValue(penalty?.missedMonths),
     0,
   )
   const paidMonths = Math.max(numberValue(account?.paidMonths), 0)
@@ -651,9 +746,10 @@ export const computePermanentBachatSettlement = (
   bachatRulesSettings = BACHAT_TESTING_RULES_DEFAULTS,
 ) => {
   const normalizedRulesSettings = normalizeBachatRulesSettings(bachatRulesSettings)
-  const startDateKey = account?.startDateKey || dateKeyFromDate(account?.startDate) || todayKey()
+  const currentAccount = deriveBachatAccountStatus(account, asOfDate, normalizedRulesSettings)
+  const startDateKey = currentAccount?.startDateKey || dateKeyFromDate(currentAccount?.startDate) || todayKey()
   const durationMonths = Math.max(
-    numberValue(account?.durationMonths, BACHAT_RULES.defaultDurationMonths),
+    numberValue(currentAccount?.durationMonths, BACHAT_RULES.defaultDurationMonths),
     1,
   )
   const completedMonths = Math.min(
@@ -663,12 +759,12 @@ export const computePermanentBachatSettlement = (
   const durationEndDate = addMonthsKey(startDateKey, durationMonths)
   const durationDays = daysBetween(startDateKey, durationEndDate)
   const completedDays = Math.min(daysBetween(startDateKey, asOfDate), durationDays)
-  const dailyAmount = moneyValue(account, 'dailyAmount')
-  const totalSavings = moneyValue(account, 'totalSavings') || moneyValue(account, 'totalCollected')
-  const totalPenalty = moneyValue(account, 'penaltyAmount')
-  const pendingSummary = calculateBachatPendingAmount(account, asOfDate)
+  const dailyAmount = moneyValue(currentAccount, 'dailyAmount')
+  const totalSavings = moneyValue(currentAccount, 'totalSavings') || moneyValue(currentAccount, 'totalCollected')
+  const totalPenalty = moneyValue(currentAccount, 'penaltyAmount')
+  const pendingSummary = calculateBachatPendingAmount(currentAccount, asOfDate)
   const pendingAmount = pendingSummary.pendingAmount
-  const configuredReward = moneyValue(account, 'maturityReward')
+  const configuredReward = moneyValue(currentAccount, 'maturityReward')
   const remainingDurationMonths = Math.max(durationMonths - completedMonths, 0)
   const usesTestingDurations = Boolean(normalizedRulesSettings.testingMode)
   const rewardEligible = usesTestingDurations
@@ -700,10 +796,10 @@ export const computePermanentBachatSettlement = (
         : 'early_closure_no_benefit'
 
   return {
-    customerId: normalizeText(account.customerId || account.id),
-    customerName: normalizeText(account.fullName || account.ownerName || account.shopName),
+    customerId: normalizeText(currentAccount.customerId || currentAccount.id),
+    customerName: normalizeText(currentAccount.fullName || currentAccount.ownerName || currentAccount.shopName),
     startDate: startDateKey,
-    originalEndDate: account.endDateKey || account.endDate || durationEndDate,
+    originalEndDate: currentAccount.endDateKey || currentAccount.endDate || durationEndDate,
     dailyAmount,
     totalSavings,
     pendingAmount,
@@ -801,7 +897,11 @@ export const listenActiveBachatAccounts = ({
 
   return onSnapshot(
     query(collection(db, COLLECTIONS.bachatAccounts), ...constraints),
-    (snapshot) => callback(docsWithIds(snapshot).filter(isActiveBachatAccount)),
+    (snapshot) => callback(
+      docsWithIds(snapshot)
+        .filter(isActiveBachatAccount)
+        .map((account) => deriveBachatAccountStatus(account)),
+    ),
     onError,
   )
 }
@@ -829,7 +929,7 @@ export const getBachatAccount = async (customerId) => {
   try {
     const snapshot = await getDoc(doc(db, COLLECTIONS.bachatAccounts, normalizedId))
     if (!snapshot.exists()) return null
-    return { id: snapshot.id, ...snapshot.data() }
+    return deriveBachatAccountStatus({ id: snapshot.id, ...snapshot.data() })
   } catch (error) {
     debugBachatPermission({
       operation: 'getDoc',
@@ -917,7 +1017,7 @@ export const listenBachatAccount = ({
   return onSnapshot(
     doc(db, COLLECTIONS.bachatAccounts, normalizedId),
     (snapshot) => {
-      onNext?.(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null)
+      onNext?.(snapshot.exists() ? deriveBachatAccountStatus({ id: snapshot.id, ...snapshot.data() }) : null)
     },
     (error) => {
       debugBachatPermission({
@@ -1184,7 +1284,11 @@ export const permanentlyCloseBachatAccount = async ({
       }
 
       const customerData = customerSnapshot.data()
-      const accountData = { id: accountSnapshot.id, ...accountSnapshot.data() }
+      const accountData = deriveBachatAccountStatus(
+        { id: accountSnapshot.id, ...accountSnapshot.data() },
+        normalizedClosureDate,
+        bachatRulesSettings,
+      )
       if (!isActiveBachatAccount(accountData)) {
         throw new Error('Only active Bachat accounts can be permanently closed.')
       }
@@ -1379,7 +1483,7 @@ export const getActiveBachatAccounts = async ({ currentUser, pageSize = 500 } = 
     docsWithIds(relaxedSnapshot).forEach((account) => {
       if (isActiveBachatAccount(account)) merged.set(account.customerId || account.id, account)
     })
-    const results = [...merged.values()]
+    const results = [...merged.values()].map((account) => deriveBachatAccountStatus(account))
     return {
       results,
       count: results.length,
@@ -2253,6 +2357,8 @@ export default {
   BACHAT_RULES,
   BACHAT_TESTING_RULES_DEFAULTS,
   calculateBachatInactiveGap,
+  calculateBachatCoveredMonthStatus,
+  deriveBachatAccountStatus,
   calculateBachatLiveMetrics,
   calculateBachatPendingAmount,
   calculateProgressiveBachatPenalty,

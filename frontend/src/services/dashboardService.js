@@ -488,8 +488,13 @@ export const listenDashboardStats = (currentUser, callback, onError) => {
       0,
     )
     const recentLoanPayments = state.recentPayments.slice(0, 6)
+    const activeBachatAccountPenaltyTotal = activeBachatAccounts.reduce(
+      (sum, account) => sum + moneyValue(account, 'penaltyAmount'),
+      0,
+    )
     const totalPenaltyAmount =
-      getActivePenaltyTotal(state.penalties) + getActiveBachatPenaltyTotal(state.bachatPenalties)
+      getActivePenaltyTotal(state.penalties) +
+      Math.max(getActiveBachatPenaltyTotal(state.bachatPenalties), activeBachatAccountPenaltyTotal)
     const ledger = state.financeEntries
     const ledgerCollections = sumFinanceEntries(ledger, ['collection', 'received', 'income'])
     const totalDeposits = sumFinanceEntries(ledger, ['deposit'])

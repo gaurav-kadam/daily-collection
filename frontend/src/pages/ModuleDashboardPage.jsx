@@ -530,8 +530,11 @@ function BachatDashboardView({ user, openEnroll = false }) {
     [bachatPendingRows],
   )
   const activePenaltyTotal = useMemo(
-    () => bachatPenalties.reduce((sum, penalty) => sum + moneyValue(penalty, 'penaltyAmount'), 0),
-    [bachatPenalties],
+    () => liveBachatMetrics.activeAccounts.reduce(
+      (sum, account) => sum + moneyValue(account, 'penaltyAmount'),
+      0,
+    ),
+    [liveBachatMetrics.activeAccounts],
   )
   const missedPaymentRows = useMemo(
     () =>
@@ -792,8 +795,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
     }))
 
   const buildPenaltyRows = (penalties = []) => {
-    const accountsByCustomerId = new Map(
-      liveBachatMetrics.activeAccounts.map((account) => [account.customerId || account.id, account]),
+    const penaltiesByCustomerId = new Map(
+      penalties.map((penalty) => [penalty.customerId || penalty.id, penalty]),
     )
     const displayDate = (value) => {
       if (!value) return '-'
@@ -802,26 +805,32 @@ function BachatDashboardView({ user, openEnroll = false }) {
       return '-'
     }
 
-    return penalties.map((penalty) => {
-      const customerId = penalty.customerId || penalty.id
-      const account = accountsByCustomerId.get(customerId) || {}
-      return {
-        customerId,
-        customerName:
-          penalty.customerName ||
-          account.fullName ||
-          account.ownerName ||
-          account.shopName ||
+    return liveBachatMetrics.activeAccounts
+      .map((account) => {
+        const customerId = account.customerId || account.id
+        const penalty = penaltiesByCustomerId.get(customerId) || {}
+        return {
           customerId,
-        dailyAmount: moneyValue(account, 'dailyAmount'),
-        pendingAmount: calculateBachatPendingAmount(account).pendingAmount,
-        penaltyAmount: moneyValue(penalty, 'penaltyAmount'),
-        status: penalty.penaltyStatus || penalty.recoveryStatus || 'active',
-        lastCollectionDate: displayDate(
-          penalty.lastPenaltyAppliedDate || penalty.lastPaymentDate || penalty.updatedAt,
-        ),
-      }
-    })
+          customerName:
+            penalty.customerName ||
+            account.fullName ||
+            account.ownerName ||
+            account.shopName ||
+            customerId,
+          dailyAmount: moneyValue(account, 'dailyAmount'),
+          pendingAmount: calculateBachatPendingAmount(account).pendingAmount,
+          penaltyAmount: moneyValue(account, 'penaltyAmount'),
+          status: account.penaltyStatus || penalty.penaltyStatus || penalty.recoveryStatus || 'active',
+          lastCollectionDate: displayDate(
+            account.lastPenaltyAppliedDate ||
+              penalty.lastPenaltyAppliedDate ||
+              penalty.lastPaymentDate ||
+              penalty.updatedAt,
+          ),
+        }
+      })
+      .filter((row) => row.customerId && row.penaltyAmount > 0)
+      .sort((first, second) => second.penaltyAmount - first.penaltyAmount)
   }
 
   const buildClosureRows = (closures = []) =>

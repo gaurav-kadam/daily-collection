@@ -15,6 +15,7 @@ import {
   buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
   computePermanentBachatSettlement,
+  deriveBachatAccountStatus,
   getBachatCollectionsByCustomer,
   getBachatPenaltyRecoveryHistory,
   listenBachatAccount,
@@ -574,19 +575,20 @@ function BachatCustomerProfilePage() {
 
   const details = useMemo(() => {
     if (!account) return null
-    const dailyAmount = moneyValue(account, 'dailyAmount')
-    const monthlyAmount = moneyValue(account, 'monthlyAmount') || dailyAmount * BACHAT_RULES.daysPerMonth
-    const durationMonths = numberValue(account.durationMonths, BACHAT_RULES.defaultDurationMonths)
-    const maturityReward = moneyValue(account, 'maturityReward')
-    const maturityAmount = moneyValue(account, 'maturityAmount')
-    const totalCollected = moneyValue(account, 'totalCollected')
-    const pendingAmount = calculateBachatPendingAmount(account).pendingAmount
-    const penaltyAmount = moneyValue(account, 'penaltyAmount')
-    const paidMonths = numberValue(account.paidMonths)
-    const missedMonths = numberValue(account.missedMonths)
-    const startDate = account.startDateKey || account.startDate || todayKey()
-    const endDate = account.endDateKey || account.endDate || todayKey()
-    const closurePreview = computeBachatClosurePreview(account, todayKey(), bachatRulesSettings)
+    const currentAccount = deriveBachatAccountStatus(account, todayKey(), bachatRulesSettings)
+    const dailyAmount = moneyValue(currentAccount, 'dailyAmount')
+    const monthlyAmount = moneyValue(currentAccount, 'monthlyAmount') || dailyAmount * BACHAT_RULES.daysPerMonth
+    const durationMonths = numberValue(currentAccount.durationMonths, BACHAT_RULES.defaultDurationMonths)
+    const maturityReward = moneyValue(currentAccount, 'maturityReward')
+    const maturityAmount = moneyValue(currentAccount, 'maturityAmount')
+    const totalCollected = moneyValue(currentAccount, 'totalCollected')
+    const pendingAmount = calculateBachatPendingAmount(currentAccount).pendingAmount
+    const penaltyAmount = moneyValue(currentAccount, 'penaltyAmount')
+    const paidMonths = numberValue(currentAccount.paidMonths)
+    const missedMonths = numberValue(currentAccount.missedMonths)
+    const startDate = currentAccount.startDateKey || currentAccount.startDate || todayKey()
+    const endDate = currentAccount.endDateKey || currentAccount.endDate || todayKey()
+    const closurePreview = computeBachatClosurePreview(currentAccount, todayKey(), bachatRulesSettings)
 
     return {
       dailyAmount,
@@ -608,7 +610,7 @@ function BachatCustomerProfilePage() {
   const penaltyAnalysis = useMemo(
     () =>
       buildBachatPenaltyAnalysis({
-        account: account || {},
+        account: account ? deriveBachatAccountStatus(account, todayKey(), bachatRulesSettings) : {},
         penalty: latestPenalty || {},
         recoveryRows: penaltyRecoveryRows,
         bachatRulesSettings,
@@ -617,8 +619,8 @@ function BachatCustomerProfilePage() {
   )
   const hasPenaltyData =
     Boolean(latestPenalty) ||
-    numberValue(account?.missedMonths) > 0 ||
-    moneyValue(account, 'penaltyAmount') > 0
+    numberValue(penaltyAnalysis.missedMonths) > 0 ||
+    numberValue(penaltyAnalysis.grossPenaltyAmount) > 0
 
   const titleName = customer?.fullName || customer?.ownerName || customer?.shopName || 'Customer'
   const accountStatus = keyFromValue(account?.accountStatus || account?.status || 'active')
@@ -632,7 +634,11 @@ function BachatCustomerProfilePage() {
     )
   const closureSettlement = useMemo(() => {
     if (!account) return null
-    const settlement = computePermanentBachatSettlement(account, todayKey(), bachatRulesSettings)
+    const settlement = computePermanentBachatSettlement(
+      deriveBachatAccountStatus(account, todayKey(), bachatRulesSettings),
+      todayKey(),
+      bachatRulesSettings,
+    )
     return {
       ...settlement,
       customerName: titleName,
@@ -715,7 +721,7 @@ function BachatCustomerProfilePage() {
       {closureSummaryOpen && closureSettlement
         ? createPortal(
             <BachatClosurePrintDocument
-              account={account}
+              account={deriveBachatAccountStatus(account, todayKey(), bachatRulesSettings)}
               closureRecord={latestClosure}
               customer={customer}
               generatedAt={printGeneratedAt}
