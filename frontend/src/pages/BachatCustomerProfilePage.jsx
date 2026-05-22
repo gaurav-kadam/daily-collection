@@ -4,10 +4,12 @@ import { FiArrowLeft, FiFileText, FiUsers } from 'react-icons/fi'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import Loader from '../components/Loader'
 import Modal from '../components/Modal'
+import BachatTestingModeBanner from '../components/bachat/BachatTestingModeBanner'
 import StatusBadge from '../components/customers/StatusBadge'
 import useAuth from '../hooks/useAuth'
 import {
   BACHAT_RULES,
+  BACHAT_TESTING_RULES_DEFAULTS,
   calculateBachatPendingAmount,
   buildBachatPenaltyAnalysis,
   computeBachatClosurePreview,
@@ -17,12 +19,13 @@ import {
   listenBachatAccount,
   listenBachatClosuresByCustomer,
   listenBachatPenaltiesByCustomer,
+  listenBachatRulesSettings,
   listenRecentBachatCollections,
   permanentlyCloseBachatAccount,
 } from '../services/bachatService'
 import { getOptimizedImageUrl } from '../services/cloudinaryService'
 import customerService from '../services/customerService'
-import { daysBetween, moneyValue, numberValue, todayKey } from '../services/firestoreService'
+import { daysBetween, moneyValue, numberValue, todayKey, USER_ROLES } from '../services/firestoreService'
 import { formatDate } from '../utils/date'
 import { formatCurrency } from '../utils/format'
 
@@ -146,6 +149,7 @@ function BachatCustomerProfilePage() {
   const [closureReason, setClosureReason] = useState('')
   const [closureSaving, setClosureSaving] = useState(false)
   const [closureActionError, setClosureActionError] = useState('')
+  const [bachatRulesSettings, setBachatRulesSettings] = useState(BACHAT_TESTING_RULES_DEFAULTS)
 
   useEffect(() => {
     let isMounted = true
@@ -230,6 +234,19 @@ function BachatCustomerProfilePage() {
       unsubscribeClosures?.()
     }
   }, [customerId, user])
+
+  useEffect(() => {
+    if (user?.role !== USER_ROLES.admin) {
+      setBachatRulesSettings(BACHAT_TESTING_RULES_DEFAULTS)
+      return undefined
+    }
+
+    return listenBachatRulesSettings(
+      { currentUser: user },
+      setBachatRulesSettings,
+      () => setBachatRulesSettings(BACHAT_TESTING_RULES_DEFAULTS),
+    )
+  }, [user])
 
   const loadHistory = useCallback(
     async ({ reset = false } = {}) => {
@@ -324,7 +341,7 @@ function BachatCustomerProfilePage() {
     const missedMonths = numberValue(account.missedMonths)
     const startDate = account.startDateKey || account.startDate || todayKey()
     const endDate = account.endDateKey || account.endDate || todayKey()
-    const closurePreview = computeBachatClosurePreview(account)
+    const closurePreview = computeBachatClosurePreview(account, todayKey(), bachatRulesSettings)
 
     return {
       dailyAmount,
@@ -341,7 +358,7 @@ function BachatCustomerProfilePage() {
       endDate,
       closurePreview,
     }
-  }, [account])
+  }, [account, bachatRulesSettings])
 
   const penaltyAnalysis = useMemo(
     () =>
@@ -349,8 +366,9 @@ function BachatCustomerProfilePage() {
         account: account || {},
         penalty: latestPenalty || {},
         recoveryRows: penaltyRecoveryRows,
+        bachatRulesSettings,
       }),
-    [account, latestPenalty, penaltyRecoveryRows],
+    [account, bachatRulesSettings, latestPenalty, penaltyRecoveryRows],
   )
   const hasPenaltyData =
     Boolean(latestPenalty) ||
@@ -369,13 +387,13 @@ function BachatCustomerProfilePage() {
     )
   const closureSettlement = useMemo(() => {
     if (!account) return null
-    const settlement = computePermanentBachatSettlement(account)
+    const settlement = computePermanentBachatSettlement(account, todayKey(), bachatRulesSettings)
     return {
       ...settlement,
       customerName: titleName,
       customerId: customer?.customerId || customer?.id || customerId,
     }
-  }, [account, customer?.customerId, customer?.id, customerId, titleName])
+  }, [account, bachatRulesSettings, customer?.customerId, customer?.id, customerId, titleName])
 
   const openClosureSummary = () => {
     setClosureActionError('')
@@ -439,6 +457,8 @@ function BachatCustomerProfilePage() {
 
   return (
     <div className="space-y-6">
+      <BachatTestingModeBanner />
+
       <section className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="page-title">Bachat Customer Profile</h2>
@@ -517,7 +537,9 @@ function BachatCustomerProfilePage() {
                 <CompactItem
                   label="Projected Payout"
                   value={formatCurrency(
-                    numberValue(account.projectedClosurePayout, details.closurePreview.payoutAmount),
+                    bachatRulesSettings.testingMode
+                      ? details.closurePreview.payoutAmount
+                      : numberValue(account.projectedClosurePayout, details.closurePreview.payoutAmount),
                   )}
                 />
               </div>
@@ -761,9 +783,11 @@ function BachatCustomerProfilePage() {
               </p>
             </div>
 
-            <label className="block text-sm">
+            <label className="block text-sm" htmlFor="bachat-closure-reason">
               <span className="mb-1 block font-medium text-slate-700">Closure Reason</span>
               <textarea
+                id="bachat-closure-reason"
+                name="bachatClosureReason"
                 className="input-field min-h-24"
                 value={closureReason}
                 onChange={(event) => setClosureReason(event.target.value)}
@@ -926,7 +950,7 @@ function BachatCustomerProfilePage() {
               <CompactItem label="Daily Amount" value={formatCurrency(penaltyAnalysis.dailyAmount)} />
               <CompactItem
                 label="Monthly Amount"
-                value={`${BACHAT_RULES.daysPerMonth} x ${formatCurrency(penaltyAnalysis.dailyAmount)} = ${formatCurrency(penaltyAnalysis.monthlyAmount)}`}
+                value={`${penaltyAnalysis.penaltyCycleDays} x ${formatCurrency(penaltyAnalysis.dailyAmount)} = ${formatCurrency(penaltyAnalysis.monthlyAmount)}`}
               />
               <CompactItem
                 label="Penalty Rate"

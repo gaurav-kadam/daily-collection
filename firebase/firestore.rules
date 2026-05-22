@@ -467,5 +467,9 @@ service cloud.firestore {
       allow read, create, update: if isAdmin();
       allow delete: if isAdmin();
     }
+
+    match /settings/{settingId} {
+      allow read, create, update, delete: if isAdmin();
+    }
   }
 }

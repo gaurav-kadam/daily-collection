@@ -20,6 +20,7 @@ export const COLLECTIONS = {
   penalties: 'penalties',
   financeEntries: 'financeEntries',
   systemCounters: 'systemCounters',
+  settings: 'settings',
 }
 
 export const USER_ROLES = {

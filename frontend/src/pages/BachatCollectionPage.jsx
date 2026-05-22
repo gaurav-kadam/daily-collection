@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import { FiCheckCircle, FiPlus } from 'react-icons/fi'
 import { useSearchParams } from 'react-router-dom'
 import Loader from '../components/Loader'
+import BachatTestingModeBanner from '../components/bachat/BachatTestingModeBanner'
 import useAuth from '../hooks/useAuth'
 import {
   calculateBachatPendingAmount,
@@ -263,6 +264,8 @@ function BachatCollectionPage() {
 
   return (
     <div className="space-y-6">
+      <BachatTestingModeBanner />
+
       <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
         <section className="card p-4">
           <div className="mb-4 flex items-center justify-between gap-3">

@@ -19,6 +19,7 @@ import {
 import { MdOutlinePayments } from 'react-icons/md'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import Modal from '../components/Modal'
+import BachatTestingModeBanner from '../components/bachat/BachatTestingModeBanner'
 import useAuth from '../hooks/useAuth'
 import useDebouncedValue from '../hooks/useDebouncedValue'
 import {
@@ -1097,6 +1098,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
 
   return (
     <div className="space-y-6">
+      <BachatTestingModeBanner />
+
       <Link to="/dashboard" className="inline-flex items-center gap-2 text-sm font-semibold text-cyan-700">
         <FiArrowLeft />
         Main Dashboard
@@ -1142,6 +1145,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
           <div className="relative">
             <FiSearch className="pointer-events-none absolute left-4 top-4 text-slate-400" />
             <input
+              id="bachat-customer-search"
+              name="bachatCustomerSearch"
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -1398,6 +1403,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
             <div className="relative mt-2">
               <FiSearch className="pointer-events-none absolute left-3 top-3.5 text-slate-400" />
               <input
+                id="bachat-enroll-customer-search"
+                name="bachatEnrollCustomerSearch"
                 type="search"
                 value={enrollSearch}
                 onChange={(event) => setEnrollSearch(event.target.value)}
@@ -1449,6 +1456,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
             <label className="text-sm">
               <span className="mb-1 block font-medium text-slate-700">Daily Amount</span>
               <input
+                id="bachat-enroll-daily-amount"
+                name="bachatEnrollDailyAmount"
                 type="number"
                 min="1"
                 className="input-field"
@@ -1459,6 +1468,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
             <label className="text-sm">
               <span className="mb-1 block font-medium text-slate-700">Duration (Months)</span>
               <input
+                id="bachat-enroll-duration-months"
+                name="bachatEnrollDurationMonths"
                 type="number"
                 min="1"
                 className="input-field"
@@ -1469,6 +1480,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
             <label className="text-sm">
               <span className="mb-1 block font-medium text-slate-700">Maturity Reward</span>
               <input
+                id="bachat-enroll-maturity-reward"
+                name="bachatEnrollMaturityReward"
                 type="number"
                 min="0"
                 className="input-field"
@@ -1479,6 +1492,8 @@ function BachatDashboardView({ user, openEnroll = false }) {
             <label className="text-sm">
               <span className="mb-1 block font-medium text-slate-700">Start Date</span>
               <input
+                id="bachat-enroll-start-date"
+                name="bachatEnrollStartDate"
                 type="date"
                 className="input-field"
                 value={enrollModal.form.startDate}
