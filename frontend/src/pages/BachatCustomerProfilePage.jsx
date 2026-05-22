@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
-import { FiArrowLeft, FiFileText, FiUsers } from 'react-icons/fi'
+import { createPortal } from 'react-dom'
+import { FiArrowLeft, FiFileText, FiPrinter, FiUsers } from 'react-icons/fi'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import Loader from '../components/Loader'
 import Modal from '../components/Modal'
@@ -31,6 +32,7 @@ import { formatCurrency } from '../utils/format'
 
 const RECENT_HISTORY_LIMIT = 5
 const FULL_HISTORY_PAGE_SIZE = 20
+const COMPANY_NAME = 'Daily Collection'
 
 function CompactItem({ label, value }) {
   return (
@@ -118,6 +120,247 @@ const formatRemainingDuration = (remainingDays, remainingMonths) => {
   return `${numberValue(remainingMonths)} months`
 }
 
+const formatPrintDate = (value) => {
+  if (!value) return '-'
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const day = new Intl.DateTimeFormat('en-GB', { day: '2-digit' }).format(date)
+  const month = new Intl.DateTimeFormat('en-GB', { month: 'short' }).format(date)
+  const year = new Intl.DateTimeFormat('en-GB', { year: 'numeric' }).format(date)
+  return `${day}-${month}-${year}`
+}
+
+const formatPrintDay = (value) => {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('en-GB', { weekday: 'long' }).format(date)
+}
+
+const formatPrintTime = (value) => {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(date)
+}
+
+const parseLocalDate = (value) => {
+  if (!value) return null
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (match) {
+    const [, year, month, day] = match
+    return new Date(Number(year), Number(month) - 1, Number(day))
+  }
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+const formatYearsMonthsDays = ({ startDate, endDate, fallbackDays }) => {
+  const start = parseLocalDate(startDate)
+  const end = parseLocalDate(endDate)
+
+  if (start && end && end >= start) {
+    let years = end.getFullYear() - start.getFullYear()
+    let months = end.getMonth() - start.getMonth()
+    let days = end.getDate() - start.getDate()
+
+    if (days < 0) {
+      months -= 1
+      days += new Date(end.getFullYear(), end.getMonth(), 0).getDate()
+    }
+    if (months < 0) {
+      years -= 1
+      months += 12
+    }
+
+    const parts = [
+      years > 0 ? `${years} Year${years === 1 ? '' : 's'}` : '',
+      months > 0 ? `${months} Month${months === 1 ? '' : 's'}` : '',
+      days > 0 || (!years && !months) ? `${Math.max(days, 0)} Day${days === 1 ? '' : 's'}` : '',
+    ].filter(Boolean)
+    return parts.join(' ')
+  }
+
+  const totalDays = Math.max(numberValue(fallbackDays), 0)
+  const years = Math.floor(totalDays / 365)
+  const months = Math.floor((totalDays % 365) / 30)
+  const days = (totalDays % 365) % 30
+  return [
+    years > 0 ? `${years} Year${years === 1 ? '' : 's'}` : '',
+    months > 0 ? `${months} Month${months === 1 ? '' : 's'}` : '',
+    days > 0 || (!years && !months) ? `${days} Day${days === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' ')
+}
+
+const printValue = (value) => {
+  if (value === 0) return 0
+  return value || '-'
+}
+
+const buildClosureReferenceId = ({ customerId, dateKey, closureId }) => {
+  if (closureId) return `BCLOSE-${closureId}`
+  const year = String(dateKey || todayKey()).slice(0, 4)
+  const suffix = String(customerId || 'pending')
+    .replace(/[^a-z0-9]/gi, '')
+    .slice(-8)
+    .toUpperCase()
+  return `BCLOSE-${year}-${suffix || 'PENDING'}`
+}
+
+function PrintRow({ label, value, strong = false }) {
+  return (
+    <div className="bachat-print-row">
+      <span>{label}</span>
+      <strong className={strong ? 'bachat-print-strong' : ''}>{printValue(value)}</strong>
+    </div>
+  )
+}
+
+function BachatClosurePrintDocument({
+  account,
+  closureRecord,
+  customer,
+  generatedAt,
+  settlement,
+  user,
+}) {
+  if (!settlement) return null
+
+  const closureDate = closureRecord?.closureDate || closureRecord?.closedOn || todayKey()
+  const customerId = settlement.customerId || customer?.customerId || customer?.id
+  const referenceId = buildClosureReferenceId({
+    customerId,
+    dateKey: closureDate,
+    closureId: closureRecord?.id,
+  })
+  const totalCollectionsMade =
+    account?.totalCollectionsMade ?? account?.totalCollections ?? account?.collectionCount
+  const accountCreatedBy =
+    account?.createdByName || account?.createdByEmail || account?.createdById || ''
+  const closureApprovedBy =
+    closureRecord?.approvedByName ||
+    closureRecord?.approvedByEmail ||
+    closureRecord?.createdByName ||
+    user?.fullName ||
+    user?.email ||
+    ''
+  const penaltyDeducted = moneyValue(settlement, 'penaltyDeducted') || numberValue(settlement.penaltyDeducted)
+
+  return (
+    <article className="bachat-closure-print-area">
+      <header className="bachat-print-header">
+        <p className="bachat-print-company">{COMPANY_NAME}</p>
+        <h1>BACHAT ACCOUNT PERMANENT CLOSURE SUMMARY</h1>
+        <div className="bachat-print-meta">
+          <span>Date: {formatPrintDate(generatedAt)}</span>
+          <span>Day: {formatPrintDay(generatedAt)}</span>
+          <span>Time: {formatPrintTime(generatedAt)}</span>
+        </div>
+        <p className="bachat-print-reference">Closure Reference ID: {referenceId}</p>
+      </header>
+
+      <section className="bachat-print-section">
+        <h2>Customer Details</h2>
+        <div className="bachat-print-grid">
+          <PrintRow label="Customer Name" value={settlement.customerName} />
+          <PrintRow label="Customer ID" value={customerId} />
+          <PrintRow label="Mobile Number" value={customer?.mobile || account?.mobile} />
+          <PrintRow label="Address" value={customer?.address || account?.address} />
+        </div>
+      </section>
+
+      <section className="bachat-print-section">
+        <h2>Bachat Account Details</h2>
+        <div className="bachat-print-grid">
+          <PrintRow label="Account Status" value={account?.status || account?.accountStatus || 'active'} />
+          <PrintRow label="Daily Amount" value={formatCurrency(settlement.dailyAmount)} />
+          <PrintRow label="Start Date" value={formatDate(settlement.startDate)} />
+          <PrintRow label="Original Maturity Date" value={formatDate(settlement.originalEndDate)} />
+          <PrintRow label="Closure Date" value={formatDate(closureDate)} />
+          <PrintRow
+            label="Duration Completed"
+            value={formatYearsMonthsDays({
+              startDate: settlement.startDate,
+              endDate: closureDate,
+              fallbackDays: settlement.durationCompletedDays,
+            })}
+          />
+        </div>
+      </section>
+
+      <section className="bachat-print-section">
+        <h2>Financial Summary</h2>
+        <div className="bachat-print-grid">
+          <PrintRow label="Total Savings" value={formatCurrency(settlement.totalSavings)} />
+          <PrintRow label="Total Penalties" value={formatCurrency(settlement.totalPenalty)} />
+          <PrintRow label="Interest Amount" value={formatCurrency(settlement.interestAmount)} />
+          <PrintRow label="Reward Amount" value={formatCurrency(settlement.rewardAmount)} />
+          <PrintRow
+            label="Final Settlement Amount"
+            value={formatCurrency(settlement.finalSettlementAmount)}
+            strong
+          />
+        </div>
+      </section>
+
+      <section className="bachat-print-section">
+        <h2>Penalty Details</h2>
+        {penaltyDeducted > 0 ? (
+          <div className="bachat-print-grid">
+            <PrintRow label="Penalty Amount" value={formatCurrency(settlement.totalPenalty)} />
+            <PrintRow label="Penalty Deducted From Settlement" value={formatCurrency(settlement.penaltyDeducted)} />
+          </div>
+        ) : (
+          <p className="bachat-print-note">No Penalties Applied</p>
+        )}
+      </section>
+
+      {(closureRecord?.closureReason || settlement.closureReason) && (
+        <section className="bachat-print-section">
+          <h2>Closure Reason</h2>
+          <p className="bachat-print-note">{closureRecord?.closureReason || settlement.closureReason}</p>
+        </section>
+      )}
+
+      <section className="bachat-print-section">
+        <h2>Audit Information</h2>
+        <div className="bachat-print-grid">
+          {totalCollectionsMade !== undefined && (
+            <PrintRow label="Total Collections Made" value={totalCollectionsMade} />
+          )}
+          <PrintRow label="Total Missed Months" value={numberValue(account?.missedMonths)} />
+          {accountCreatedBy && <PrintRow label="Account Created By" value={accountCreatedBy} />}
+          {closureApprovedBy && <PrintRow label="Closure Approved By" value={closureApprovedBy} />}
+        </div>
+      </section>
+
+      <section className="bachat-print-declaration">
+        <p>This Bachat account has been permanently closed.</p>
+        <p>The customer has received or is eligible to receive the settlement amount shown above.</p>
+        <p>The Bachat module will remain inactive for this customer until the original maturity period expires as per company policy.</p>
+      </section>
+
+      <section className="bachat-print-signatures">
+        <div>
+          <p>Customer Signature</p>
+          <span />
+        </div>
+        <div>
+          <p>Authorized Officer</p>
+          <span />
+        </div>
+        <div>
+          <p>Date</p>
+          <span />
+        </div>
+      </section>
+    </article>
+  )
+}
+
 function BachatCustomerProfilePage() {
   const { customerId } = useParams()
   const navigate = useNavigate()
@@ -149,7 +392,9 @@ function BachatCustomerProfilePage() {
   const [closureReason, setClosureReason] = useState('')
   const [closureSaving, setClosureSaving] = useState(false)
   const [closureActionError, setClosureActionError] = useState('')
+  const [printGeneratedAt, setPrintGeneratedAt] = useState(() => new Date())
   const [bachatRulesSettings, setBachatRulesSettings] = useState(BACHAT_TESTING_RULES_DEFAULTS)
+  const printInProgressRef = useRef(false)
 
   useEffect(() => {
     let isMounted = true
@@ -400,6 +645,16 @@ function BachatCustomerProfilePage() {
     setClosureSummaryOpen(true)
   }
 
+  const printClosureSummary = () => {
+    if (printInProgressRef.current) return
+    printInProgressRef.current = true
+    setPrintGeneratedAt(new Date())
+    window.setTimeout(() => {
+      window.print()
+      printInProgressRef.current = false
+    }, 0)
+  }
+
   const confirmPermanentClosure = async () => {
     if (!account || !user) return
 
@@ -457,6 +712,20 @@ function BachatCustomerProfilePage() {
 
   return (
     <div className="space-y-6">
+      {closureSummaryOpen && closureSettlement
+        ? createPortal(
+            <BachatClosurePrintDocument
+              account={account}
+              closureRecord={latestClosure}
+              customer={customer}
+              generatedAt={printGeneratedAt}
+              settlement={{ ...closureSettlement, closureReason }}
+              user={user}
+            />,
+            document.body,
+          )
+        : null}
+
       <BachatTestingModeBanner />
 
       <section className="flex flex-wrap items-center justify-between gap-3">
@@ -802,6 +1071,15 @@ function BachatCustomerProfilePage() {
             )}
 
             <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+              <button
+                type="button"
+                className="btn-secondary inline-flex items-center gap-2"
+                onClick={printClosureSummary}
+                disabled={closureSaving}
+              >
+                <FiPrinter />
+                Print Closure Summary
+              </button>
               <button
                 type="button"
                 className="btn-secondary"
