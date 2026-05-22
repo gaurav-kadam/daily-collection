@@ -870,7 +870,7 @@ function BachatDashboardView({ user, openEnroll = false }) {
         setInsightModal({
           open: true,
           key: cardKey,
-          title: "Today's Pending Accounts",
+          title: "Total Pending Amount of All Customers",
           loading: false,
           rows,
         })
